@@ -1,0 +1,10 @@
+# Local Arena sandbox exercises, toolchains, and build artifacts (never commit)
+.arena/
+.fds-state/
+scratch/
+target/
+node_modules/
+dist/
+build/
+*.wasm
+*.log
