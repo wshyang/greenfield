@@ -483,6 +483,215 @@ Answer these thirteen up front and a greenfield project avoids most of the
 rework, silent drift, and "we should have written that down" moments this
 template exists to prevent.
 
+## 12. Architecture in Node.js and TypeScript
+
+The router's §5 fixes the cross-language decisions: boundary before
+distribution, executable dependency rules, one owner per table, pattern per
+module, abstraction needs a second implementation. This section is the Node.js
+mechanism for each — and one uncomfortable fact that changes how much you get
+for free.
+
+### 12.1 The uncomfortable fact: TypeScript has no module boundary
+
+`export` is a compile-time courtesy. Nothing stops `src/reporting` from importing
+`src/billing/internal/ledger.ts`, and nothing fails when it does — the import
+resolves, the build passes, and the coupling is now permanent. Node's resolver
+has no notion of "private module", and TypeScript's visibility is erased before a
+line of code runs.
+
+Worse, some boundaries are invisible *because* the type system merges them:
+`declare module "fastify"` augments globally, so two workspace packages that each
+add a request property collide the moment they share a compilation context, and
+the failure appears in whichever package compiled second.
+
+Consequences, all of which the rest of this section follows from:
+
+- **A boundary you did not enforce with tooling does not exist** (router §5.2).
+- **`interface` costs nothing and therefore proves nothing** on its own; a port
+  is only real if a second implementation exists (router §5.5).
+- **The reliable unit of isolation is a package**, not a folder.
+
+| Concern | Node/TypeScript mechanism | Enforced by |
+| --- | --- | --- |
+| Module boundary | separate workspace package + `package.json` `exports` | the resolver, at build and runtime |
+| Dependency rule | `dependency-cruiser` (or Nx `enforce-module-boundaries`) | CI |
+| Build isolation | `tsconfig` project references, `composite: true` | `tsc -b` |
+| Runtime scoping of hooks/state | Fastify encapsulation context | Fastify itself |
+| A port | a TS `interface` + at least one non-mock implementation | review, tests |
+| Dependency injection | explicit constructor/argument passing at a composition root | the type checker |
+| Cross-module reads | a published query function or a read model, never a raw join | dependency-cruiser |
+
+### 12.2 Boundaries: package first, folders second
+
+A folder is a naming convention. A package is a wall.
+
+```jsonc
+// packages/requests/package.json
+{
+  "name": "@app/requests",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  }
+}
+```
+
+Everything not listed in `exports` is unreachable from another package — the
+subpath not exported cannot be imported, at runtime or in the type checker. That
+is the closest Node has to `pub(crate)`, and it costs one build step.
+
+Inside a single package, structure by domain and treat the directory layout as
+documentation rather than enforcement (§7, §12.1). Do not pretend a folder
+called `internal/` is private; add the dependency-cruiser rule in the same commit
+that creates it.
+
+### 12.3 The dependency rule, as a failing build
+
+```js
+// dependency-cruiser.config.cjs — three rules that earn their place
+module.exports = {
+  forbidden: [
+    {
+      name: "no-cross-module-internals",
+      severity: "error",
+      from: { path: "^src/([^/]+)" },
+      to: { path: "^src/(?!$1)[^/]+/internal" },
+    },
+    {
+      name: "domain-does-not-import-infra",
+      severity: "error",
+      from: { path: "^src/.*/domain" },
+      to: { path: "^src/.*/(db|http|adapters)" },
+    },
+    { name: "no-circular", severity: "error", from: {}, to: { circular: true } },
+  ],
+  options: { doNotFollow: { path: "node_modules" }, tsConfig: { fileName: "tsconfig.json" } },
+};
+```
+
+Run it in `static-test` next to lint (§10), and make the message actionable —
+"reporting may not import billing/internal" is a rule a reviewer can act on;
+"architecture violation" is not.
+
+Two practical notes from real modular-monolith work: the rule that catches the
+most is the cross-module *internal* one, and the first violation is almost always
+someone reaching for a private table type "just for a dashboard". The fitness
+function is what turns that from a debate into a red build.
+
+### 12.4 Fastify encapsulation is a real boundary — of state, not of imports
+
+Fastify's `register()` creates a **child context**: decorators and hooks added
+inside it are visible to its descendants, invisible to its siblings and its
+parent. That is a genuine runtime boundary, and the closest thing Node has to a
+module system — but be precise about what it isolates:
+
+```ts
+// src/requests/routes.ts — everything this module decorates stays in its subtree
+export default async function requestsRoutes(app: FastifyInstance) {
+  app.decorate("requests", new RequestService(app.db));      // not visible to siblings
+  app.addHook("preHandler", requireSession);                 // scoped to this plugin
+  app.get("/api/requests/:id", getRequest);
+}
+
+// src/app.ts — the composition root is the only file that wires modules
+await app.register(import("./db/plugin.ts"), { /* fp-wrapped: pool + config */ });
+await app.register(import("./requests/routes.ts"), { prefix: "/api" });
+await app.register(import("./billing/routes.ts"), { prefix: "/api" });
+```
+
+- **It isolates decorated state and hooks, not imports.** `requests/routes.ts`
+  can still `import { ledger } from "../billing/internal"` and Fastify will not
+  notice. Encapsulation plus dependency-cruiser is the pair; either alone is
+  half a boundary.
+- **Break encapsulation deliberately and narrowly.** A `fastify-plugin`-wrapped
+  plugin decorates the parent scope — correct for a pool, a logger, an auth
+  decorator, and wrong for anything module-specific. The raw
+  `Symbol.for("skip-override")` escape hatch skips the semver and dependency
+  metadata checks as well; do not use it.
+- **Do not reach for a DI container instead.** Constructor arguments from one
+  composition root are visible, testable, and typed; a container that resolves
+  dependencies by string key is the service-locator anti-pattern (§12.7).
+
+### 12.5 Ports, and when an interface is a lie
+
+```ts
+// src/requests/domain/order-store.ts — the port speaks the domain, not SQL
+export interface OrderStore {
+  findOpen(customerId: CustomerId): Promise<Order[]>;
+  save(order: Order): Promise<void>;
+}
+```
+
+That interface is erased at build time and enforces nothing at runtime. It is
+worth writing when:
+
+- **a second adapter exists** — an in-memory store used by fast domain tests, or
+  a second vendor; or
+- **the compiler needs help at a seam** you are about to cross with a `dyn`-like
+  choice (a queue, an email provider).
+
+It is **not** worth writing for the database, because §2 forbids mocking the data
+layer: the only other implementation would be a mock, and the test suite never
+uses it. In that case the honest design is a module that owns its SQL, exported
+as functions — `db/queries/requests.ts` — with no interface in front of it.
+
+Where a port is real, keep the mapping in one place: the adapter converts row →
+domain, and nothing downstream sees a `snake_case` column name (§4.1).
+
+### 12.6 Composition root, not service locator
+
+```ts
+// src/app.ts — one place constructs the graph
+const db = createDb(config.databaseUrl);
+const mailer = config.smtp ? new SmtpMailer(config.smtp) : new LogMailer(logger);
+const requests = new RequestService(db, mailer, clock);
+
+app.decorate("requests", requests);
+```
+
+The dependency graph is readable in one file, and `grep "new SmtpMailer"` finds
+every construction site. A `container.resolve("RequestService")` call scattered
+through handlers hides the graph, defeats the compiler at the seam, and turns a
+missing registration into a runtime error instead of a type error.
+
+### 12.7 Node-specific anti-patterns
+
+| Anti-pattern | Why it bites here | Fix |
+| --- | --- | --- |
+| **Service-locator container** | hidden deps; missing registration fails at runtime, not compile time | explicit arguments from one composition root |
+| **Sinkhole service layer** | `getX()` forwards to `repo.getX()`; three files, zero logic | collapse the layer, or keep it where the 20% with rules live |
+| **Fat controller with SQL** | business rule, query, and HTTP shape in one function; untestable without a request | move the rule into a domain function; keep the handler to parse → call → respond |
+| **`any` at the boundary** | `req.json()` is `any`; the compiler's silence is the bug | parse to a domain type with Zod/Valibot at the edge, then pass the type |
+| **Fire-and-forget `forEach(async …)`** | prints "done" before the work starts; rejections vanish | `for…of await` (sequential) or `Promise.all(map)` (parallel, all-settled if tolerated) |
+| **N+1 ORM loop** | one query per row, invisible until production volume | one join / `with` / `inArray`, and a query-count assertion in tests |
+| **Module-level mutable singleton** | `let db` in a module is shared by every test in the process, and ordering matters | construct in the composition root; pass down |
+| **Barrel re-exporting `internal/`** | reassembles the public API of things meant to be private, and defeats the `exports` wall | export only the module's real surface |
+| **`utils/` god module** | becomes the seam everyone imports; it is a boundary-less module by design | move each helper to the domain that owns it |
+| **One deployment per feature, "for scale"** | adds a network hop, a queue, and a failure mode for load a single process handles | worker_threads for CPU work first; a service only on a router §5.1 trigger |
+
+### 12.8 Review checklist
+
+1. Does this module have a public surface, or is everything importable?
+2. Is the boundary a package, or a folder pretending to be one?
+3. Do the three dependency-cruiser rules still run in `static-test`?
+4. Does any port have a second, non-mock implementation? If not, delete it.
+5. Is the dependency graph constructible in one file?
+6. Does any handler contain a business rule *and* SQL *and* a response shape?
+7. Is any `async` call unawaited without an explicit, logged rejection path?
+8. Would this still be one deployable if the feature halved in traffic?
+
+**Sources (checked October 2026).** [Fastify
+Encapsulation](https://fastify.dev/docs/latest/Reference/Encapsulation/) and the
+Plugins reference for the child-context model and `fastify-plugin` caveats;
+dependency-cruiser and Nx boundary docs for the rule syntax; the Fastify monorepo
+discussion on `declare module` collisions across workspace packages; the
+modular-monolith field guide for the dependency-cruiser case study; and the stock
+layered-architecture guidance for the sinkhole and fat-controller anti-patterns,
+curated here down to what actually bites in Node.
+
+---
+
 If a rule here conflicts with the language you actually chose, you are in the
 wrong variant: `GREENFIELD-RUST.md` is the Rust sibling, and
 [`GREENFIELD.md`](GREENFIELD.md) is the router that explains how to write a new

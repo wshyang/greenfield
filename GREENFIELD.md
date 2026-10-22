@@ -109,7 +109,7 @@ B. Rust 1.99 (2024 edition) — the type system as the design tool
 
 C. A language with no variant yet (Python, Go, Java/Kotlin, C#…)
    Real answer: there is no template, so the honest options are (1) choose A or B
-   for now, or (2) write the variant first (§7) and accept that it is a
+   for now, or (2) write the variant first (§8) and accept that it is a
    half-day of work with no code output.
 
 Recommendation: A, unless §2's answers point at Rust. Node gets a service to
@@ -229,6 +229,7 @@ itself.
 | Lint / supply chain | ESLint, `npm audit`, lockfile policy | `clippy -D warnings`, `cargo-deny`, 7-day age gate | the equivalent gates, and which ones are CI-only |
 | Runtime image | `node:22-alpine`, multi-stage, `USER` | distroless + `cargo-chef` + healthcheck subcommand | base image, build caching, healthcheck without a shell |
 | Frontend | React + Vite (default) | React + Vite (default), Leptos/HTMX optional | whether the UI is a separate axis or part of the language choice |
+| Boundary enforcement | packages + `exports` + dependency-cruiser | crates + visibility + the Cargo graph | the language's privacy mechanism, and the fitness function that backs it (§5.2) |
 
 **The frontend is a separate axis.** Both variants default to React + Vite and
 treat the API as the boundary; Rust additionally offers Leptos or Askama/HTMX for
@@ -239,7 +240,176 @@ of `DR-00`.
 
 ---
 
-## 5. After the answer
+## 5. Architecture: the cross-language decisions
+
+Architecture patterns are **decisions about coupling, ownership, and change** —
+so the decisions are portable even though their enforcement never is. The test
+that separates the two: *if nothing fails the build when someone violates a
+boundary, you do not have a boundary — you have a diagram*. Every rule below
+survives a language change; every mechanism that enforces it does not, which is
+why the mechanisms live in the variants (§4).
+
+**Do not put a pattern catalogue here.** CQRS, sagas, and event sourcing are not
+in either variant's default shape (one Postgres, one deployable), and a catalogue
+in a standing-instructions file is an invitation to cargo-cult. If a project
+needs a saga, the honest reading is that it chose distribution, and the guide's
+job is to make that consequence visible — not to hand over a pattern.
+
+### 5.1 Boundary before distribution
+
+**The modular monolith is the default; extraction has to be earned.** The 2026
+evidence is consistent: teams that split early spend their capacity on service
+discovery, distributed tracing, and cross-service consistency instead of the
+product, and the well-publicised reversals (Prime Video's ~90% infrastructure
+reduction after un-distributing, Segment collapsing 140+ services) are the same
+lesson at scale.
+
+Extract a module **only** when one of these is true, and cite which one in the
+addendum:
+
+| Trigger | Evidence required |
+| --- | --- |
+| Divergent resource profile | one module needs ~10× the CPU/memory of the rest, measured |
+| Delivery blocking | two teams genuinely cannot ship without coordinating releases |
+| Regulatory or security isolation | a compliance scope (PCI, sensitive data) mandates physical separation |
+| Different runtime | the workload needs a GPU, a different language, or a different scaling model |
+| Stable ownership | one named team already owns the module's internals end to end |
+
+Not on the list: anticipated growth, "microservices are best practice", résumé
+value, or a diagram someone drew before the first user signed up.
+
+Two rules that make the decision honest:
+
+- **Extract through a reversible seam.** Establish the module boundary *inside*
+  the monolith first: a public module API, no caller touching internals, an
+  explicit write owner per table. If you cannot do that, the boundary is wrong
+  and extraction will not fix it — it will only make the violation more
+  expensive to notice.
+- **Move data before code.** Split the tables into a module-owned schema while
+  still in one database, and watch what breaks. A service whose data still lives
+  in someone else's schema is a distributed monolith with extra steps.
+
+### 5.2 Make the dependency rule executable
+
+Documented architecture decays: rules that depend on memory erode under
+turnover and deadline pressure, while the compiler happily accepts the import.
+Every rule therefore needs a **fitness function** — an automated check that
+fails the build.
+
+Two kinds, and they answer different questions:
+
+| Kind | Example | Answers |
+| --- | --- | --- |
+| **Structural** | "no module may import another module's `internal/`", "no cycles", "`domain` may not import `infra`" | *is this edge allowed?* |
+| **Metric** | afferent/efferent coupling (`Ca`, `Ce`), instability `I = Ce/(Ce+Ca)`, abstractness `A`, distance from the main sequence `D` | *is this component getting harder to change?* |
+
+By the book, `D = |A + I − 1|` and a component is "on the main sequence" at
+`D = 0`; the two failure zones below are what a threshold on `D` is actually
+catching.
+
+Metrics are worth using for **trend**, not for gating: a component far from the
+main sequence sits in the *zone of pain* (concrete and unstable — everything
+depends on it and it changes constantly) or the *zone of uselessness* (abstract
+and stable — nobody uses it). But note the caveat that matters for this
+repository: **`A` counts interfaces and abstract classes, so it is an
+object-oriented metric.** In a language without them it must be reinterpreted
+before it means anything — a Rust trait, a TypeScript `interface`, and a Java
+`interface` are not the same kind of thing. Do not port the formula; port the
+question.
+
+Structural rules are the ones to enforce from day one, because they are cheap and
+unambiguous. Start with three: no cycles, no inward-pointing edge (infrastructure
+may depend on domain, never the reverse), and no reaching past a module's public
+surface.
+
+### 5.3 One owner per table
+
+A shared database across two services is the distributed monolith in its purest
+form: it recreates every coupling of a monolith, then adds a network hop and
+loses the transaction. Within a monolith the same rule applies more
+cheaply — **one module owns the writes to a table**, and everyone else reads
+through that module's API or a deliberate read model.
+
+- Give each module its own schema (or a table-name prefix) even in one database;
+  it makes the boundary visible in every query and turns a future extraction into
+  a deployment change rather than a data migration.
+- Cross-module reads are a decision, not an accident: a published query
+  interface, a read model, or an event. A raw `JOIN` across two modules' tables
+  is the coupling the boundary existed to prevent.
+
+### 5.4 Pattern per module, not per system
+
+**Do not apply one architectural style uniformly.** A single bounded context can
+carry a ports-and-adapters core slice and transaction-script supporting slices at
+the same time; the "architectural slices" principle is that each module takes the
+style its complexity justifies.
+
+- The **core** slice — the thing the product is differentiating — gets the
+  isolation, the explicit ports, and the tests that make it independent.
+- A **supporting** slice — an admin CRUD screen, a lookup table — gets the
+  simplest thing that works: a handler, a query, a test. Wrapping it in five
+  layers is the *sinkhole* anti-pattern: a service layer that only forwards calls.
+- Uniform "Clean Architecture" across every module is a tax with no return on the
+  boring half of the system, and it is the most common way a greenfield pays for
+  architecture before it has any.
+
+### 5.5 Abstraction needs a second implementation
+
+A port, interface, or trait earns its keep when **something else can implement
+it** — a second vendor, a second storage engine, a test double you actually use.
+Otherwise it is indirection with a maintenance bill.
+
+Two corollaries that apply in every language:
+
+- **A port speaks the domain's language.** `DatabasePort` or `OrderRepository`
+  that mirrors SQL operations is a leak wearing an interface; the port should name
+  the business capability (`ForPersistingOrders`, `OrderStore`) and expose domain
+  types.
+- **One implementation is not a port, it is a prediction.** This template forbids
+  mocking the data layer (§3), so an interface whose only other implementation is
+  a mock is a prediction that has already been falsified.
+
+### 5.6 The anti-patterns that survive translation
+
+These describe **dependency topology**, so they are language-independent — and
+they are the only anti-patterns this router carries.
+
+| Anti-pattern | Symptom | Fix |
+| --- | --- | --- |
+| **Big ball of mud** | change amplification, shotgun coordination, promiscuous data, dependency cycles | boundaries plus the fitness functions of §5.2 |
+| **Distributed monolith** | shared database, synchronous call chains, lock-step deploys, a mega shared library, one orchestrator doing all the flow | one owner per table, async or coarse-grained calls, and merge the services that always change together |
+| **Sinkhole architecture** | every layer passes the call through unchanged | collapse the layer, or keep it only where the 20% with real logic lives |
+| **Architecture in diagrams only** | the wiki says the domain is isolated; the import says otherwise | an executable rule, or the rule does not exist |
+| **Wrong boundary, rigorously enforced** | clean contracts wrapped around a line that cuts through a business concept | fix the boundary *before* adding enforcement — stricter is worse, not better |
+| **Premature distribution** | services, queues, and sagas for a load that one process could serve | modular monolith; extract on the §5.1 triggers |
+
+### 5.7 What is not in this section
+
+The following are **language-specific by construction** and belong in the variant
+that owns them. If a rule names a construct — trait, interface, class, module,
+plugin, decorator — it is not a router rule.
+
+| Question | Node variant (§12) | Rust variant (§18) |
+| --- | --- | --- |
+| How is a port expressed? | a TS `interface`, erased at runtime | a trait, with the `dyn`/generic trade |
+| How is a boundary enforced? | packages, `exports`, dependency-cruiser | crates, visibility, the Cargo graph |
+| How is a dependency injected? | explicit arguments at a composition root | `State<AppState>`, generics, or `dyn` |
+| What does a module boundary cost? | little at build time, nothing at runtime | `pub` surface, compile units, inlining |
+| What is the language's native architecture anti-pattern? | layers with no enforcement; service locator | trait soup; one-impl abstractions; `Arc<Mutex<_>>` state |
+
+**Sources (checked October 2026).** *Building Evolutionary Architectures* for
+fitness functions and the Martin metrics (`Ca`, `Ce`, `I`, `A`, `D`); the
+modular-monolith field guide for "a wrong boundary rigorously enforced is worse
+than none" and for per-module architecture; the distributed-monolith catalogue
+for the failure names; the AWS prescriptive guide and Cockburn's
+ports-and-adapters write-ups for when adapters pay; [Prime Video and Segment
+reversals](https://hostmedia.medium.com/the-modular-monolith-is-back-was-it-ever-really-gone-c3a5e36d5907)
+for the distribution evidence. The metrics caveat — `A` counts interfaces and
+abstract classes — is why §5.2 says to port the question, not the formula.
+
+---
+
+## 6. After the answer
 
 1. Copy the chosen variant to the new repository as `CLAUDE.md`.
 2. Write addendum `0001` (§1.1) in the same commit.
@@ -256,7 +426,7 @@ variant.
 
 ---
 
-## 6. Mixed-language projects
+## 7. Mixed-language projects
 
 Allowed, and sometimes right — but it must be a decision, not an accident.
 
@@ -274,14 +444,14 @@ which is exactly the friction the single-language templates exist to remove.
 
 ---
 
-## 7. Adding a new language variant
+## 8. Adding a new language variant
 
 Only do this if someone will maintain it. A variant that rots is worse than a
 variant that does not exist, because it carries the authority of the set.
 
 1. **Copy the nearest skeleton.** `GREENFIELD-RUST.md` is the fuller shape
-   (§0–§18, with the decision cards and the code-level sections); the Node
-   variant is the leaner one (§0–§11).
+   (§0–§19, with the decision cards and the code-level sections); the Node
+   variant is the leaner one (§0–§12).
 2. **Keep the two load-bearing sections intact in intent**: the decision
    interview and the addendum discipline. They are the reason the set exists.
 3. **Translate the invariant core of §3**, one row at a time, into the language's
@@ -292,7 +462,7 @@ variant that does not exist, because it carries the authority of the set.
    adjectives is not a decision aid.
 5. **Date it and record versions** at the top ("verified October 2026"), the way
    both existing variants do. An undated template is a rumour.
-6. **Name it `GREENFIELD-<LANG>.md`**, add it to the register in §8, and add the
+6. **Name it `GREENFIELD-<LANG>.md`**, add it to the register in §9, and add the
    pointer in the same commit.
 7. **Prove standalone-ness**: hand the file alone to someone who has never seen
    this repo and check they can bootstrap a project. If they need the router or
@@ -302,7 +472,7 @@ variant that does not exist, because it carries the authority of the set.
 
 ---
 
-## 8. Register
+## 9. Register
 
 | Variant | Status | Verified | Maintainer |
 | --- | --- | --- | --- |
@@ -315,7 +485,7 @@ its CI claims still run. Demote before you let it mislead.
 
 ---
 
-## 9. Keeping the router honest
+## 10. Keeping the router honest
 
 - **The router stays small.** Every rule added here is a rule that will drift
   from the variant that owns it. Additions belong in the shared-invariant table

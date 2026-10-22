@@ -38,7 +38,8 @@ schema evolution · §6 code conventions · §7 function and module design · §
 honest validation · §9 local dev · §10 containers and SHIP-HATS · §11 day-one
 checklist · §12 the ten decision cards · §13 the strictness profile · §14 API and
 idiom rules · §15 design patterns · §16 async and observability · §17 performance
-and adversarial testing · §18 keeping this template honest.
+and adversarial testing · §18 architecture in Rust · §19 keeping this
+template honest.
 
 ---
 
@@ -2835,7 +2836,204 @@ and fail only on a regression that exceeds it twice in a row.
 
 ---
 
-## 18. Keeping this template honest
+## 18. Architecture in Rust
+
+The router's §5 fixes the cross-language decisions: boundary before
+distribution, executable dependency rules, one owner per table, pattern per
+module, abstraction needs a second implementation. This section is the Rust
+mechanism for each — and Rust gets one of them for free that Node does not.
+
+### 18.1 The compiler is the boundary
+
+**Crates form an acyclic dependency graph, and only `pub` items cross a crate
+boundary.** That is not a convention to be remembered; it is a build error
+waiting to happen. Put each layer in its own crate and the dependency rule stops
+being a diagram:
+
+```toml
+# crates/api/Cargo.toml — api may depend on domain; domain cannot depend on api
+[dependencies]
+domain = { path = "../domain" }
+axum = { workspace = true }
+```
+
+```toml
+# crates/domain/Cargo.toml — no axum, no sqlx, no tokio
+[dependencies]
+serde = { workspace = true }
+time = { workspace = true }
+```
+
+`crates/domain` cannot import the HTTP layer, because the HTTP layer is not in
+its dependency list. There is no lint to configure, no CI job to forget, and no
+review comment that can be overruled at 23:00 before a release.
+
+Three consequences worth stating, because they are the whole reason this works:
+
+- **Modules inside a crate may be cyclic.** `mod a` can use `mod b` which uses
+  `mod a`, so an intra-crate module boundary is social, reinforced only by
+  visibility and `cargo modules dependencies --acyclic` (§7.4). If a boundary
+  matters, make it a crate.
+- **Visibility is checked, not advisory.** `pub(crate)`, `pub(super)`, and
+  `pub(in crate::requests)` are enforced by the compiler, so a module's surface
+  can be smaller than the crate's.
+- **The cost is `pub` surface.** Anything shared across a crate boundary must be
+  public, which is a permanent API commitment (`C-STRUCT-PRIVATE`, §14.3). If
+  splitting a crate forces you to make internals public, the split is drawing the
+  line in the wrong place.
+
+### 18.2 When a crate split pays, and when it is vanity
+
+Crate boundaries buy enforcement and incremental compilation; they cost
+boilerplate, `pub` exposure, and some cross-crate inlining. The 2026 guidance is
+consistent and worth quoting against your own instincts: *do not split a project
+into many crates just because it looks architectural* — boundaries are worth it
+when they enforce meaningful separation, and a good target is roughly **4–6
+layered crates, not dozens**.
+
+| Split when | Do not split when |
+| --- | --- |
+| the dependency direction must be enforced, not agreed | the reason is "layers look tidy" |
+| a module is released, deployed, or consumed by another binary | it is one binary and one team |
+| the domain must stay free of `tokio`/`axum`/`sqlx` | the crate would only re-export another crate |
+| compile time is dominated by one huge compilation unit | the split forces `pub` on internals |
+| a proc-macro or build script needs its own crate | you are under ~10k lines total |
+
+The re-export crate is the tell: if `crates/http` contains nothing but
+`pub use api::*`, it is a folder with a `Cargo.toml`.
+
+### 18.3 The port: trait, enum, or nothing
+
+Rust gives three ways to express the same architectural seam, and choosing the
+wrong one is the language's signature architecture mistake.
+
+```rust
+// A. Trait object: open set, chosen at runtime (a plugin, a vendor SDK)
+pub trait EventSink: Send + Sync {
+    fn publish(&self, event: &DomainEvent) -> Result<(), SinkError>;
+}
+
+// B. Enum: closed set, known at compile time — exhaustive, no vtable
+pub enum Notification {
+    Email(EmailNotification),
+    Sms(SmsNotification),
+}
+
+// C. Concrete type: one implementation, no seam at all
+pub struct RequestService { db: PgPool, clock: Clock }
+```
+
+| Mechanism | Choose when | Cost |
+| --- | --- | --- |
+| concrete type | one implementation, no second adapter on the horizon | none — and this is the right answer most of the time |
+| `enum` + `match` | the set is closed and you want exhaustive handling | adding a variant touches every match (which is the point) |
+| `Box<dyn Trait>` / `&dyn Trait` | the implementation is chosen at runtime, or the set is open | 16-byte pointer, one indirection, and the trait must be dyn-compatible |
+| `<T: Trait>` generic | the caller picks the type and it is monomorphized | "generic infection": the parameter spreads to every struct and function that holds it |
+
+Two rules that keep this honest:
+
+- **A trait with one implementation and no second adapter is a prediction, not a
+  port** (router §5.5). In Rust it is also a bill: `async fn` in a trait is not
+  dyn-compatible, so the moment you want `Box<dyn Port>` you need `#[async_trait]`
+  or a hand-rolled boxed future, and the `Send + Sync` bounds become viral
+  through every impl and every struct that holds it.
+- **Generics belong at the leaf, `dyn` at the boundary.** Prefer `&dyn`/`Box<dyn>`
+  at a composition seam so the type parameter does not infect `AppState`;
+  monomorphize inside the leaf function where it actually helps. Practice from
+  hexagonal-in-Rust write-ups is blunt about the alternative: generic parameters
+  on structs are "very infectious" and are usually the reason a Rust port quietly
+  costs more than the thing it abstracts.
+
+### 18.4 State: concrete, not a shared god object
+
+```rust
+// The composition root owns the graph; handlers take a concrete AppState.
+#[derive(Clone)]
+pub struct AppState {
+    pub db: PgPool,
+    pub clock: Clock,
+    pub mailer: Arc<dyn Mailer>,   // the one genuinely swappable seam
+}
+
+pub async fn submit(
+    State(state): State<AppState>,
+    Json(body): Json<SubmitRequest>,
+) -> Result<Json<RequestSummary>, ApiError> { /* … */ }
+```
+
+`Arc<Mutex<HashMap<String, T>>>` as application state is the Rust-flavoured
+version of a global variable: every reader contends for one lock, the invariants
+live in whichever task holds it last, and the tests cannot run in parallel
+without racing. Prefer a typed field per dependency, a channel when something
+must be serialized, and a database when the state must survive a restart.
+
+If a dependency genuinely needs runtime swapping, use `Arc<dyn Trait>` for *that
+one* field and say why in a comment. An `AppState` where every field is a trait
+object is the Node service locator wearing Rust's clothes.
+
+### 18.5 Layered workspace, with the dependency rule in the manifest
+
+```text
+crates/
+  domain/      # entities, invariants, pure decisions — no I/O, no async runtime
+  application/ # use cases: orchestrates domain + ports
+  adapters/    # sqlx, http clients, mail, oidc — implements application's ports
+  server/      # axum wiring, config, telemetry, main
+```
+
+- **Arrows only point inward**: `server → adapters → application → domain`.
+  Enforce it with the manifests, not a document.
+- **`domain` stays pure.** No `sqlx`, no `tokio`, no `axum`. That is what makes
+  §2's unit tests instant and what makes a future typestate (§15.3) possible.
+- **`application` owns the ports** (the traits it needs), and `adapters`
+  implements them. A port defined in `adapters` and imported by `application`
+  inverts the dependency and defeats the whole layout.
+- **Only `server` constructs the graph.** One `main.rs`, one place where
+  `PgPool`, `Clock`, and concrete adapters are assembled.
+
+Migration is mechanical when the time comes: because `domain` and `application`
+already have no infrastructure dependencies, promoting a crate to a service is a
+deployment change, not a rewrite (router §5.1).
+
+### 18.6 Rust-specific anti-patterns
+
+| Anti-pattern | Why it bites here | Fix |
+| --- | --- | --- |
+| **Trait per entity, one impl** | `trait RequestRepository` + `PgRequestRepository` and nothing else: indirection with no second adapter, plus `async_trait` bounds | delete the trait; take the concrete type |
+| **Generic parameter on every struct** | goes viral through impls, `Send + Sync` bounds, and compile times | concrete in the struct, generic in the leaf function |
+| **`Arc<Mutex<AppState>>`** | one global lock, no parallelism, tests cannot share it | typed fields; channel or DB for real shared state |
+| **`pub` everywhere "so crates can see it"** | leaks internals into a permanent API commitment | fix the boundary; move the item, do not widen it |
+| **A crate that only re-exports** | a folder with a `Cargo.toml`; adds build time and `pub` surface for nothing | put the items in the crate they belong to |
+| **Premature workspace split** | dozens of crates, `pub` sprawl, slower builds from lost inlining | start as modules; split on a §18.2 trigger |
+| **`cfg(feature)` as architecture** | `#[cfg]` branches become the module system; every build is a different program | features for optional deps only; separate crates for separate products |
+| **Enum dispatch for an open set** | every new adapter edits the core's enum | `Box<dyn>` for open sets, enum for closed ones |
+| **Boxing in a hot path "for flexibility"** | one indirection per call in the loop that matters | measure (§17.1); monomorphize the hot path |
+| **An interface for the database** | the second impl would be a mock, which §2 forbids | `sqlx` queries in the owning module, no trait |
+
+### 18.7 Review checklist
+
+1. Does the dependency direction appear in `Cargo.toml`, or only in a document?
+2. Does `domain` import anything from `adapters`, `axum`, or `sqlx`?
+3. Does every trait in `application` have a second, real implementation?
+4. Is any struct generic purely to hold an injected dependency?
+5. Is application state concrete, or one `Arc<Mutex<_>>` away from a global?
+6. Does any crate contain only re-exports?
+7. Is `pub` minimal at each crate boundary?
+8. Would extracting this crate into a service change a manifest, or a design?
+
+**Sources (checked October 2026).** [Rust at scale: packages, crates, and
+modules](https://mmapped.blog/posts/03-rust-packages-crates-modules) for the
+module-vs-crate trade (cycles inside a crate, parallelism across crates); the
+module-organization guidance for the visibility ladder and "do not split just
+because it looks architectural"; [Master hexagonal architecture in
+Rust](https://www.howtocodeit.com/guides/master-hexagonal-architecture-in-rust)
+and its critique thread for the `Send + Sync` and generic-infection costs; the
+Rust API Guidelines (`C-STRUCT-PRIVATE`, `C-SEALED`) for the visibility
+commitment a crate boundary creates.
+
+---
+
+## 19. Keeping this template honest
 
 This file is itself a living document, and it decays in specific, predictable
 ways. Maintain it the way it asks you to maintain a project:
