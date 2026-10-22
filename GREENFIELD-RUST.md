@@ -45,17 +45,19 @@ template honest.
 
 ## 0. How to use this template
 
-### 0.1 Copy, then split
+### 0.1 Copy, then unpack
 
-- Copy this whole file as `CLAUDE.md` in the new Rust repository. Replace every
-  `<placeholder>`. Keep the `DR-` identifiers intact: they are referenced by
-  addenda, CI checks, and code comments.
-- Past a few hundred lines, split each `##` section into `CLAUDE-rust-<area>.md`
-  (`CLAUDE-rust-database.md`, `CLAUDE-rust-deployment.md`, …) behind a
-  top-level index. Agents then `grep` one focused file instead of loading the
-  corpus. Decide the split on day one; retrofitting it is churn.
-- Keep §0 (the interview), §1 (decisions), and §2 (tests) in the *first* file an
-  agent reads. They prevent the most rework.
+- Copy this whole file as `CLAUDE.md` in the new Rust repository, delete the
+  greenfield set's other files (the router and the Node variant) in the same
+  commit, then replace every `<placeholder>`. Keep the `DR-` identifiers intact:
+  they are referenced by addenda, CI checks, and code comments.
+- Splitting each `##` section into `CLAUDE-rust-<area>.md`
+  (`CLAUDE-rust-database.md`, `CLAUDE-rust-deployment.md`, …) behind a top-level
+  index is **optional**, not a bootstrap step. Do it when one file stops being
+  readable in a single pass; agents then `grep` one focused file instead of
+  loading the corpus. Until then, one file is simpler to keep honest.
+- If you do split, keep §0 (the interview), §1 (decisions), and §2 (tests) in the
+  *first* file an agent reads. They prevent the most rework.
 - Copy the deployment starters from `initial-templates/` in the greenfield
   repository when they exist, then contextualise them against §10.1. The Rust
   `Dockerfile` in §10.1 is the reference implementation; do not copy the Node

@@ -31,11 +31,15 @@ greenfield repo is not scaffolding — it is the question in §1.
    language, so a future reader never needs this router. Do not concatenate two
    variants, and do not "merge the good bits" — a merged file is a third,
    unmaintained variant.
-3. **Split it as it grows** (each variant's §0 explains the split), keeping the
-   decision/addenda and test sections in the first file an agent reads.
-4. **Pair it with `FDS_BUILDER.md`.** The design-spec prompt and the engineering
-   template answer different questions — what the system must do, and how the
-   code must be built. Both are needed; neither substitutes for the other.
+3. **Prune, then unpack** (§6). Delete the variants you did not choose — and
+   this router — from the tree an agent will read, then replace every
+   `<placeholder>`, record the answers, and delete the rules the project has
+   decided against. A copied template that was never unpacked is a menu sitting
+   in the wrong repository.
+4. **Pair it with `FDS_BUILDER.md`, or delete it.** The design-spec prompt and
+   the engineering template answer different questions — what the system must
+   do, and how the code must be built. Both are needed *if the project writes
+   that spec*; a companion nobody opens is another menu entry (§6.1).
 5. **Contextualise `initial-templates/`.** The Dockerfile there auto-detects an
    app type, which is wrong for anything with its own server (§10.1 of either
    variant explains what to replace).
@@ -135,7 +139,8 @@ supersedes: null
 # 0001 — Backend language: Rust
 
 ## Decision
-Rust, per GREENFIELD-RUST.md, copied to CLAUDE.md.
+Rust, unpacked from the greenfield set's Rust template into this repo's
+CLAUDE.md (the other template was removed in the same commit).
 ## Why
 <the user's reason, in their words>
 ## Rejected
@@ -409,20 +414,62 @@ abstract classes — is why §5.2 says to port the question, not the formula.
 
 ---
 
-## 6. After the answer
+## 6. After the answer: prune, then unpack
 
-1. Copy the chosen variant to the new repository as `CLAUDE.md`.
-2. Write addendum `0001` (§1.1) in the same commit.
-3. Work the variant's own decision register — `DR-01`…`DR-10` in Rust, the
-   equivalent questions in Node — **before** the code that depends on them.
-4. Pair with `FDS_BUILDER.md`; the spec is written in the product's language,
-   not the implementation's.
-5. Bootstrap: one command to a running stack, a real test DB, and the container
-   contract green before the first feature.
+The decision is not the deliverable; the project's own file is. Three stages, in
+this order — and the first one is deletion.
+
+| Stage | Do | Done when |
+| --- | --- | --- |
+| **1. Choose** | ask §1 once; record `DR-00` as addendum `0001` (§1.1) | the answer is in the decision register, not only in chat |
+| **2. Prune** | delete the variants you did not choose, and this router, from the tree an agent will read | `ls` shows one standing-instruction file, not a menu |
+| **3. Unpack** | make the survivor repo-specific: placeholders, decisions, commands, dead rules | no `<placeholder>`, no rule the project has decided against, no pointer back here |
+
+### 6.1 Prune: a project gets one file, not a menu
+
+Copy the chosen variant as `CLAUDE.md`, then delete from the same working tree:
+the unchosen variant(s), this router, and any copied-but-unused scaffold.
+
+- **A leftover menu is not neutral.** An agent that can see two variants will
+  cite the wrong one, and every future reader has to re-derive why the other
+  file does not apply. Deleting it is the cheapest form of enforcement the set
+  has.
+- **Delete, do not archive in place.** Git history is the archive. A
+  `templates/` directory in the project is how the wrong file gets read at 2 a.m.
+- **`FDS_BUILDER.md` is the one exception.** It is language-agnostic and answers
+  a different question — the product spec, not the implementation. Keep it only
+  if the project will actually write that spec; otherwise it is also a menu.
+- **Never keep the runner-up "for reference".** Addendum `0001` already records
+  what was rejected and why, in one line each. The full second variant is not
+  more information; it is a second authority.
+
+### 6.2 Unpack: derive the repo's version, do not adopt the template whole
+
+1. **Replace every `<placeholder>`** and every unresolved "either / or" the
+   register has since settled. The file must read as if it were written for this
+   repository, not about it.
+2. **Record first, then delete the loser.** Each answer in the variant's own
+   register (`DR-01`…`DR-10` in Rust, the equivalent questions in Node) removes
+   the options it rejected from the body — a file that still offers both is a
+   decision not yet made.
+3. **Delete rules the project has decided against, in the commit that decides
+   it** (§0.6). Keep the deny-lists: they are the cheapest part to carry and the
+   most expensive to relearn.
+4. **Rewrite the commands to the repo's real ones.** A template command that does
+   not exist is worse than no command — agents run it, get a shell error, and
+   report the step done.
+5. **Pair with `FDS_BUILDER.md`** if you kept it; the spec is written in the
+   product's language, not the implementation's.
+6. **Bootstrap:** one command to a running stack, a real test DB, and the
+   container contract green before the first feature.
+7. **Splitting the file into `CLAUDE-<lang>-<area>.md` parts is optional.** Do
+   it when one file stops being readable in a single pass, not as a bootstrap
+   ritual; if you do, keep the decision/addenda and test sections in the first
+   file an agent reads.
 
 Nothing in this router needs to be copied forward. If a project's `CLAUDE.md`
 still contains a link back here, the variant was not standalone enough — fix the
-variant.
+variant. If the project still contains this router, pruning was skipped.
 
 ---
 
@@ -498,6 +545,10 @@ its CI claims still run. Demote before you let it mislead.
   rule of thumb in the same commit, and say why in the commit message.
 - **Re-verify the register quarterly.** A variant's "verified" date must mean the
   versions and platform facts inside it were checked, not that the file exists.
+- **Judge the set by what survives unpacking.** If projects keep the runner-up
+  variant or the router in their tree, §6.1 is too soft — tighten the instruction,
+  not the project. A template set whose output is still a menu has not done its
+  job.
 - **Never let the router name a stack the variants do not implement.** The
   failure mode is an agent citing §4's table as if it were a rule, and inventing
   a project that matches neither template.

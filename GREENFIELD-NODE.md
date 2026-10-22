@@ -18,14 +18,13 @@ port 3000 — are already the defaults in each section.
 
 ## 0. How to use this template
 
-- Copy the whole file as `CLAUDE.md`, then **replace every `<placeholder>`**
-  with the real stack.
-- As the project grows past a few hundred lines, split each `##` section into
-  its own file (`CLAUDE-testing.md`, `CLAUDE-database.md`, …) with a
-  top-level `CLAUDE.md` index, so agents `grep` a focused section instead of
-  loading the whole corpus. A top-level index + sectioned files is a
-  *documentation architecture*, decided on day one — retrofitting it later is
-  churn you don't need.
+- Copy the whole file as `CLAUDE.md`, **delete the greenfield set's other
+  files** (the router and the Rust variant) in the same commit, then **replace
+  every `<placeholder>`** with the real stack.
+- Splitting each `##` section into its own file (`CLAUDE-testing.md`,
+  `CLAUDE-database.md`, …) behind a top-level index is **optional**, not a
+  bootstrap step: do it when one file stops being readable in a single pass.
+  Until then, one file is simpler to keep honest.
 - Keep the "record every decision" and "write tests first" rules in the very
   first sections: they are the two that prevent the most rework.
 - Copy the deployment starters from the greenfield repository's
