@@ -19,6 +19,11 @@ Every rule in the variants assumes a language; a rule written for the wrong one
 is worse than no rule, because it is confidently wrong. So the first action on a
 greenfield repo is not scaffolding — it is the question in §1.
 
+**`wshyang/greenfield` is the source of the set; pruning happens in the project
+that seeds from it, never here.** This repository keeps every fork on purpose —
+a fork removed here cannot be chosen by the next project. §6 describes what the
+seeded project does, not what this one does.
+
 ---
 
 ## 0. How to use this repository
@@ -417,7 +422,8 @@ abstract classes — is why §5.2 says to port the question, not the formula.
 ## 6. After the answer: prune, then unpack
 
 The decision is not the deliverable; the project's own file is. Three stages, in
-this order — and the first one is deletion.
+this order — and the first one is deletion. **All three happen in the seeded
+project, never in `wshyang/greenfield`.**
 
 | Stage | Do | Done when |
 | --- | --- | --- |
