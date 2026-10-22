@@ -1,4 +1,8 @@
-# GREENFIELD.md — CLAUDE.md template for new projects
+# GREENFIELD-NODE.md — CLAUDE.md template for new Node.js + TypeScript projects
+
+**Standalone.** This is the Node.js/TypeScript variant of the greenfield
+template set; you reached it from the language question in `GREENFIELD.md`. It is
+self-contained — nothing here depends on reading the router or the Rust variant.
 
 This file is a **standing-instructions template** meant to be copied to a new
 repository's `CLAUDE.md` (and split into focused section files as the project
@@ -6,8 +10,9 @@ grows). It distills the conventions, disciplines, and tooling choices that —
 if laid out up front — avoid the avoidable pain we hit when they were learned
 the hard way mid-project. It is **deliberately project-agnostic**: no product
 name, no feature references, no hardcoded service names. Adjust the concrete
-stack placeholders (language, framework, ORM, test runner) to the actual
-project.
+stack placeholders (framework, ORM, test runner) to the actual project; the
+Node/TypeScript assumptions — `npm`/`pnpm`, `node:22-alpine`, Drizzle, Playwright,
+port 3000 — are already the defaults in each section.
 
 ---
 
@@ -474,6 +479,11 @@ them with ShellCheck (`pip install shellcheck-py`).
 13. SHIP-HATS pipeline files kept inert (`*.shiphats`) with `activate-shiphats.sh`,
     in step with the local gates, tested; root scripts Bash 3.2 compatible.
 
-Answer these thirteen up front and a greenfield project avoids most of the rework,
-silent drift, and "we should have written that down" moments this template
-exists to prevent.
+Answer these thirteen up front and a greenfield project avoids most of the
+rework, silent drift, and "we should have written that down" moments this
+template exists to prevent.
+
+If a rule here conflicts with the language you actually chose, you are in the
+wrong variant: `GREENFIELD-RUST.md` is the Rust sibling, and
+[`GREENFIELD.md`](GREENFIELD.md) is the router that explains how to write a new
+one.
