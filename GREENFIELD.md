@@ -1,479 +1,560 @@
-# GREENFIELD.md — CLAUDE.md template for new projects
+# GREENFIELD.md — pick your language, then take the matching template
 
-This file is a **standing-instructions template** meant to be copied to a new
-repository's `CLAUDE.md` (and split into focused section files as the project
-grows). It distills the conventions, disciplines, and tooling choices that —
-if laid out up front — avoid the avoidable pain we hit when they were learned
-the hard way mid-project. It is **deliberately project-agnostic**: no product
-name, no feature references, no hardcoded service names. Adjust the concrete
-stack placeholders (language, framework, ORM, test runner) to the actual
+This repository is a **set of standing-instruction templates** for starting a new
+project so that the expensive lessons are paid for once, up front, instead of
+being rediscovered mid-project. This file is the **router**. It does not contain
+the rules; it asks one question, records the answer, and hands you the file that
+does.
+
+```text
+GREENFIELD.md            ← you are here: the language question and the shared contract
+├── GREENFIELD-NODE.md   ← Node.js + TypeScript variant (standalone)
+├── GREENFIELD-RUST.md   ← Rust variant (standalone)
+├── FDS_BUILDER.md       ← companion: builds the functional/design spec (any language)
+└── initial-templates/   ← container starters to contextualise, not to copy blind
+```
+
+**The router's only job is to stop the agent from picking a language for you.**
+Every rule in the variants assumes a language; a rule written for the wrong one
+is worse than no rule, because it is confidently wrong. So the first action on a
+greenfield repo is not scaffolding — it is the question in §1.
+
+**`wshyang/greenfield` is the source of the set; pruning happens in the project
+that seeds from it, never here.** This repository keeps every fork on purpose —
+a fork removed here cannot be chosen by the next project. §6 describes what the
+seeded project does, not what this one does.
+
+---
+
+## 0. How to use this repository
+
+1. **Ask §1 before writing any code.** The answer is `DR-00`, the first entry in
+   the project's decision register, and it is recorded as addendum `0001` before
+   the first commit that contains `src/`.
+2. **Copy exactly one variant** to the new repository as `CLAUDE.md`. The
+   variants are standalone: each restates the whole contract in its own
+   language, so a future reader never needs this router. Do not concatenate two
+   variants, and do not "merge the good bits" — a merged file is a third,
+   unmaintained variant.
+3. **Prune, then unpack** (§6). Delete the variants you did not choose — and
+   this router — from the tree an agent will read, then replace every
+   `<placeholder>`, record the answers, and delete the rules the project has
+   decided against. A copied template that was never unpacked is a menu sitting
+   in the wrong repository.
+4. **Pair it with `FDS_BUILDER.md`, or delete it.** The design-spec prompt and
+   the engineering template answer different questions — what the system must
+   do, and how the code must be built. Both are needed *if the project writes
+   that spec*; a companion nobody opens is another menu entry (§6.1).
+5. **Contextualise `initial-templates/`.** The Dockerfile there auto-detects an
+   app type, which is wrong for anything with its own server (§10.1 of either
+   variant explains what to replace).
+6. **Delete what does not apply, in the same commit that makes it not apply.**
+   A stale rule that nobody follows teaches future agents that the file is
+   advisory.
+
+---
+
+## 1. The language question (DR-00)
+
+Ask it once, as its own message, using the card shape both variants already
+prescribe: a real code excerpt per option in the project's own vocabulary, pros,
+costs, a "choose this if" line, and a recommendation. Never bundle it with the
+framework or database question — those are downstream of this answer and will be
+asked later, inside the chosen variant.
+
+**Do not re-ask an answered question.** If the request already names the
+language ("a Rust service that…", "a Next.js app that…"), treat `DR-00` as
+answered: confirm it in one line, record it, and go straight to that variant's
+register. Asking again is the same failure as never asking, wearing a different
+hat — it tells the user nobody is listening.
+
+```text
+DR-00 · Backend language — the first decision
+
+Which language and runtime should the server be written in? This decides which
+template you get; everything else (framework, ORM, auth, runtime image) is asked
+afterwards, inside that template.
+
+A. Node.js 22 + TypeScript — one language across the stack
+   Real example (Fastify + Drizzle, the variant's default shape):
+       app.get("/api/requests/:id", async (req, reply) => {
+         const [row] = await db.select().from(requests)
+           .where(and(eq(requests.id, req.params.id), isNull(requests.expiresAt)))
+           .limit(1);
+         if (!row) return reply.code(404).send(problem(404, "not-found"));
+         return row;
+       });
+   Pros:  fastest path from clone to a running route; the same language as the
+          React frontend, so one toolchain and one hiring profile; the deepest
+          library ecosystem for the things government apps actually need
+          (PDF/Excel, email, SSO sample code, OCR, spreadsheets); a large pool
+          of reviewers.
+   Costs: no compile-time SQL or wire checking unless you add Drizzle/Kysely and
+          generate types; ~60–150 MB RSS per service and GC pauses in the tail;
+          CPU-bound work needs worker_threads or a second service; the type
+          system stops at the boundary you remembered to type.
+   Choose if: the workload is CRUD and API orchestration, the deadline is real,
+          or the team already writes TypeScript.
+
+B. Rust 1.99 (2024 edition) — the type system as the design tool
+   Real example (axum + sqlx, the variant's default shape):
+       async fn get_request(
+           State(state): State<AppState>,
+           Path(id): Path<Uuid>,
+       ) -> Result<Json<RequestSummary>, ApiError> {
+           Ok(Json(state.requests.summary(RequestId::from(id)).await?))
+       }
+   Pros:  a typo in a column name or a renamed wire field fails the build, not a
+          page; ~10–30 MB RSS, no GC, flat p99 under load; one static binary in
+          a distroless image with no runtime to patch; exhaustive errors and
+          `Option` make the "forgot the null case" bug class much harder.
+   Costs: slower iteration on CRUD (borrow checker, rebuilds, more ceremony for
+          email/PDF/auth); a smaller hiring pool and fewer drop-in libraries;
+          compile times that make CI caching a design concern; a rewrite if the
+          team later decides it wanted Node.
+   Choose if: there is a hard latency/memory constraint, the service is
+          long-lived and ops cost dominates, the domain is correctness-critical,
+          or the team already writes and reviews Rust.
+
+C. A language with no variant yet (Python, Go, Java/Kotlin, C#…)
+   Real answer: there is no template, so the honest options are (1) choose A or B
+   for now, or (2) write the variant first (§8) and accept that it is a
+   half-day of work with no code output.
+
+Recommendation: A, unless §2's answers point at Rust. Node gets a service to
+first-endpoint fastest, and a hot path can be carved out into Rust later; the
+reverse migration is a rewrite.
+Reply A/B/C, or "you choose" (which means A, recorded as decided_by: agent).
+```
+
+### 1.1 Recording the answer
+
+The answer becomes addendum `0001` in the new repository, before scaffolding:
+
+```markdown
+---
+id: 0001
+decision: DR-00
+status: accepted
+decided_by: user          # or agent, if the user delegated
+date: 2026-10-23
+supersedes: null
+---
+
+# 0001 — Backend language: Rust
+
+## Decision
+Rust, unpacked from the greenfield set's Rust template into this repo's
+CLAUDE.md (the other template was removed in the same commit).
+## Why
+<the user's reason, in their words>
+## Rejected
+- Node + TypeScript: <the actual reason>
+## Impact
+- §13–§17 of the template apply as written; `DR-01`…`DR-10` come next.
+```
+
+If the user delegates ("you choose"), say which conditions you checked, record
+`decided_by: agent`, and put the same sentence in the PR description. A silent
+default is the failure this router exists to prevent.
+
+---
+
+## 2. When the answer is not obvious
+
+Answer all six; none is decisive alone. **Rust has to earn it: four or more
+answers — including Q1 or Q2 — must point at Rust, otherwise choose Node.** Rust
+is the better answer for a narrow set of problems and a worse answer for a broad
+set of teams; pretending otherwise is how a six-week tool becomes a four-month
 project.
 
+| # | Question | Points to Node | Points to Rust |
+| --- | --- | --- | --- |
+| 1 | Is there a hard numeric constraint — p99 latency, RAM per replica, cold start, single static binary, no GC in the tail? | no such constraint | constraint is measured and binding |
+| 2 | Who maintains this in 18 months, and do they write Rust **today**? | the team is JS/TS, or unknown | at least one reviewer writes Rust |
+| 3 | Is the work CRUD, API orchestration, and third-party calls, or CPU-bound (parsing, crypto, media, simulation, streaming)? | I/O-bound | CPU-bound |
+| 4 | Does the domain depend on JS-only libraries (SSO SDK with only JS samples, some PDF/OCR/Excel packages, vendor SDKs)? | yes | no, or a Rust crate exists |
+| 5 | Is the UI React? | yes → one language across the stack | UI is Leptos/HTMX, or a thin API is fine |
+| 6 | What is the real deadline versus a Rust ramp-up? | weeks | months, and the ramp is planned |
+
+Two rules of thumb that survive contact with reality:
+
+- **Latency is usually Postgres, not the language.** A Rust service making five
+  sequential 2 ms queries is slower than a Node service making one 3 ms query.
+  Measure the query plan before rewriting a service for speed (Rust variant
+  §17.4 says the same thing from inside the language).
+- **The cost of Rust is paid by every future change, not just the first one.**
+  If the team cannot review it, the type system's benefits are consumed by the
+  review bottleneck.
+
 ---
 
-## 0. How to use this template
+## 3. What every variant shares (the invariant core)
 
-- Copy the whole file as `CLAUDE.md`, then **replace every `<placeholder>`**
-  with the real stack.
-- As the project grows past a few hundred lines, split each `##` section into
-  its own file (`CLAUDE-testing.md`, `CLAUDE-database.md`, …) with a
-  top-level `CLAUDE.md` index, so agents `grep` a focused section instead of
-  loading the whole corpus. A top-level index + sectioned files is a
-  *documentation architecture*, decided on day one — retrofitting it later is
-  churn you don't need.
-- Keep the "record every decision" and "write tests first" rules in the very
-  first sections: they are the two that prevent the most rework.
-- Copy the deployment starters from the greenfield repository's
-  `initial-templates/` (`Dockerfile`, `Dockerfile.dev`,
-  `Dockerfile.cloudflared`), contextualise them to the project, and add the
-  SHIP-HATS pipeline inert, with its activation script (§10).
+These are language-independent. They are the reason the templates exist, and a
+new variant must carry all of them, translated into whatever the language makes
+idiomatic. The variant states them concretely; this list is the contract.
+
+| Invariant | Why it is language-independent |
+| --- | --- |
+| **A living spec plus a numbered addenda register**, written in the same change as the decision | Drift is a process failure, not a syntax problem |
+| **A decision interview**: ask before coding, record the answer, supersede rather than edit | Prevents an agent from silently choosing on the user's behalf |
+| **Tests against a real database**, through the real app entrypoint, never a mocked data layer | A mock cannot fail the way SQL fails |
+| **An IDOR negative test per route**, asserting the exact status *and* that no row changed | Authentication is not authorization, in any language |
+| **Soft deletion, not `DELETE`**, with active-row filtering on every read and every authorization check | Data retention and accidental resurrection are schema-level |
+| **Timestamp-ordered IDs (UUIDv7), minted in one place, wrapped in a type** | Index locality and argument-swap bugs are runtime facts |
+| **Real rows for system actors**, never sentinel strings | Every `actor_id` must be a genuine foreign key |
+| **Schema snapshot and numbered migration, both updated in the same commit**, with a parity check | Two sources of truth drift silently |
+| **Typed wire contract generated from the server**, committed, and diffed in CI | A rename must be a compile error, not a blank page |
+| **`data-testid` at authoring time** with a documented convention | The e2e suite is a contract, not a scavenger hunt |
+| **Function shape rules** (≤ 50 lines, ≤ 3 parameters, guard clauses, no flag arguments, domain-based modules) | Fowler's refactorings do not care what compiles them |
+| **Honest validation**: name the rung you reached; never claim "tests pass" from a typecheck | The failure mode is a green message over a broken build |
+| **One-command local dev**, three-file env contract, separate test DB | Reproducibility is not language-specific |
+| **Container contract**: listen on `0.0.0.0:3000`, numeric `USER`, healthcheck, pinned digests, proxy trusted by CIDR | The platform's ingress does not read your source language |
+| **SHIP-HATS carried inert** as `*.shiphats` with `activate-shiphats.sh`, kept in step | Compliance is a pipeline property, not a framework feature |
+| **Root scripts run on Bash 3.2** | The new joiner's macOS does not care what the server is written in |
+
+**Conflict rule.** If this table and a variant disagree, the variant wins for a
+project that copied it — it is the file the agent actually reads — and the other
+must be corrected in the same commit. A router that quietly contradicts its
+variants is worse than no router.
 
 ---
 
-## 1. Record every decision, up front, in a living spec (addendum discipline)
+## 4. What varies, and what a new variant must decide
 
-**When you start, decide what the "source of truth" is and where decisions
-get written.** The single biggest avoidable cost in a long-lived project is a
-spec that silently drifts from the implemented system, forcing future readers
-to reverse-engineer intent from commits and chat.
+Each variant answers the same layers with different tools. This is the map a new
+variant has to fill in; it is also why the router must not try to hold the rules
+itself.
 
-- Maintain a **living functional/design specification** (the product contract)
-  plus a **sequentially-numbered addenda register** for every decision that
-  isn't dictated by that base spec: filling a gap, adding a new
-  object/field/tool, or deviating from the spec.
-- Write up each addendum **proactively, in the same change that makes the
-  decision** — never as a follow-up. Each covers: (1) what was decided,
-  (2) why, (3) which spec section it relates to, (4) practical impact and what
-  a future reader must know.
-- Keep the addenda **independent of the base spec's own section numbering**, so
-  the base spec stays stable and addenda append forever.
-- `CLAUDE.md` must tell future agents to do this without being asked. It is the
-  difference between a codebase you can reason about and a puzzle box.
+| Layer | Node + TypeScript | Rust | What a third variant must settle |
+| --- | --- | --- | --- |
+| HTTP / routing | Fastify or Next.js route handlers | `axum 0.8` + `tower` | framework, extractor model, how tests drive the app without a socket |
+| Data access | Drizzle (schema-as-source), one casing, no hand-written mappers | `sqlx 0.9` (compile-checked SQL) or diesel, never two | the ORM/query layer, and whether SQL is checked at compile time |
+| Wire contract | shared types / OpenAPI → client | `utoipa` → OpenAPI → TS | how server types become client types, and the CI diff that proves it |
+| Migrations | numbered SQL + wholesale snapshot | same twin, `sqlx::migrate!` | the migration runner and the parity check |
+| Tests | Vitest + Playwright, real DB | `cargo nextest` + `sqlx::test` + Playwright | test runner, DB isolation mechanism, video evidence |
+| Auth | session cookie + CSRF | `tower-sessions` + `argon2` + OIDC | session store, revocation, CSRF story |
+| Strictness | `tsconfig` `strictest` + lint | Clippy profile + `clippy.toml` | what "strict" means when the compiler is not already strict |
+| Lint / supply chain | ESLint, `npm audit`, lockfile policy | `clippy -D warnings`, `cargo-deny`, 7-day age gate | the equivalent gates, and which ones are CI-only |
+| Runtime image | `node:22-alpine`, multi-stage, `USER` | distroless + `cargo-chef` + healthcheck subcommand | base image, build caching, healthcheck without a shell |
+| Frontend | React + Vite (default) | React + Vite (default), Leptos/HTMX optional | whether the UI is a separate axis or part of the language choice |
+| Boundary enforcement | packages + `exports` + dependency-cruiser | crates + visibility + the Cargo graph | the language's privacy mechanism, and the fitness function that backs it (§5.2) |
 
-## 2. Write tests first, and keep them real (no mocks where it counts)
+**The frontend is a separate axis.** Both variants default to React + Vite and
+treat the API as the boundary; Rust additionally offers Leptos or Askama/HTMX for
+a Rust-only stack. Choosing Rust for the backend does **not** commit you to a
+Rust frontend, and choosing Node does not commit you to one either. Record the
+frontend as its own decision (`DR-05` in the Rust variant), not as a consequence
+of `DR-00`.
 
-**Tests are the mechanism that actually catches bugs — decide the discipline
-before any feature ships.** The pain avoided: shipping a wrong-field bug or an
-authorization hole that a manual review missed, because "the happy path works."
+---
 
-- **Backend:** run automated integration tests against a **real database
-  (a separate test DB, never the dev DB)** through the real app entrypoint
-  (e.g. an app/router object that can be exercised without a listening
-  socket) — **never mock the data-access layer**. A mocked-repository test
-  hides exactly the class of bug you care about (bad SQL, wrong column names,
-  FK violations, JSONB round-tripping).
-- **Every route/endpoint needs BOTH a positive test AND a session-scoping
-  negative test**: a real, valid, logged-in session that is the *wrong party*
-  for THIS resource (IDOR-style id substitution) must be rejected. A generic
-  "no token → 401" proves auth, not authorization scoping.
-- **Add/update tests in the same change as the route** — never as a follow-up.
-- Frontend unit tests may mock the API boundary; e2e tests drive the real UI
-  against a real backend with **no mocks**.
-- Adopt a security-test matrix (e.g. OWASP Top 10) for every endpoint, with an
-  explicit applicability assessment per category — decide this on day one,
-  not after an audit finds gaps.
+## 5. Architecture: the cross-language decisions
 
-## 3. Test infrastructure defaults (video, isolation, determinism)
+Architecture patterns are **decisions about coupling, ownership, and change** —
+so the decisions are portable even though their enforcement never is. The test
+that separates the two: *if nothing fails the build when someone violates a
+boundary, you do not have a boundary — you have a diagram*. Every rule below
+survives a language change; every mechanism that enforces it does not, which is
+why the mechanisms live in the variants (§4).
 
-- **Record Playwright video by default**, with a single documented env-var
-  off-switch. Retroactively discovering a whole e2e suite was "blind on
-  failure" because video was off is avoidable.
-- **Isolate environments hard**: a separate test DB, unique-per-run test
-  identifiers (e.g. `{label}.{runId}@example.test`), and self-contained
-  provisioning so suites are repeatable and runnable in parallel.
-- Use **realistic, deterministic fixture data** (named people, not `user-123`),
-  with pools that reflect the domain (e.g. different name pools per actor
-  role/affiliation) so test output reads naturally while remaining unique.
-- Decide the **test layout by type** on day one (`backend/`, `frontend/unit`,
-  `frontend/e2e`, `fixtures/`) and keep it consistent.
+**Do not put a pattern catalogue here.** CQRS, sagas, and event sourcing are not
+in either variant's default shape (one Postgres, one deployable), and a catalogue
+in a standing-instructions file is an invitation to cargo-cult. If a project
+needs a saga, the honest reading is that it chose distribution, and the guide's
+job is to make that consequence visible — not to hand over a pattern.
 
-## 4. Database / ORM discipline (the two-source-of-truth trap)
+### 5.1 Boundary before distribution
 
-**The single costliest architectural smell in this project was carrying the
-same field in two spellings** (snake_case at the DB, camelCase in TypeScript)
-and building hand-written mappers to translate between them. Lay out the
-policy up front:
+**The modular monolith is the default; extraction has to be earned.** The 2026
+evidence is consistent: teams that split early spend their capacity on service
+discovery, distributed tracing, and cross-service consistency instead of the
+product, and the well-publicised reversals (Prime Video's ~90% infrastructure
+reduction after un-distributing, Segment collapsing 140+ services) are the same
+lesson at scale.
 
-- **One casing, one mapper, by the ORM — never hand-written mappers.** If you
-  use an ORM with a property→column mapping (e.g. Drizzle), the ORM is the
-  *only* translation you write. Pick one casing for the TypeScript domain
-  (camelCase) and let the ORM map to snake_case DB columns. **Do not add a
-  second, redundant mapper layer** — it is a two-sources-of-truth trap that
-  every field must keep in agreement by hand.
-- **Every new table/data-access object uses the ORM** — no hand-written raw
-  SQL for CRUD. Keep the schema definitions, the data-access layer, and the
-  typed domain objects in sync in the same change.
-- **Soft deletion, not hard `DELETE`.** Give every relationship/entity that
-  can be "removed" a nullable `expires_at`/`deleted_at` from day one, a
-  partial unique index (`WHERE expires_at IS NULL`), an `invalidate` (not
-  `delete`) repo method, and active-row filtering on every read and every
-  authorization check. Retroactively adding soft-delete + re-checking every
-  "is it still active" gate is high-effort and bug-prone.
-- **Timestamp-ordered IDs** (e.g. UUIDv7, not v4) for index locality on
-  high-insert tables — decide the ID scheme on day one and mint IDs in exactly
-  one place.
-- **System/non-human actors are real rows**, never sentinel string constants —
-  so every `actor_id` is a genuine FK. Decide this before any `'system'`/`'unknown'`
-  literal leaks in.
-- **Foreign-key validity at write time must consider soft-deleted rows**: a
-  column that references another row must reject both nonexistent AND
-  invalidated targets — a DB FK only proves the row once existed.
+Extract a module **only** when one of these is true, and cite which one in the
+addendum:
 
-## 5. Schema evolution (migrations + wholesale snapshot, same change)
+| Trigger | Evidence required |
+| --- | --- |
+| Divergent resource profile | one module needs ~10× the CPU/memory of the rest, measured |
+| Delivery blocking | two teams genuinely cannot ship without coordinating releases |
+| Regulatory or security isolation | a compliance scope (PCI, sensitive data) mandates physical separation |
+| Different runtime | the workload needs a GPU, a different language, or a different scaling model |
+| Stable ownership | one named team already owns the module's internals end to end |
 
-- **Two always-in-sync halves, landed in the same commit:**
-  (1) a wholesale, self-contained schema/seed snapshot that a brand-new DB
-  applies from zero (every `CREATE TABLE` lists every current column — never
-  `ALTER`s that turn it into "current shape + a changelog of patches");
-  (2) a sequentially-numbered migration file (zero-padded, idempotent,
-  `BEGIN`/`COMMIT`, records itself in a `schema_migrations` table) that an
-  already-provisioned DB applies to catch up.
-- **Every schema change = snapshot update + migration file, in the same commit.**
-  Skipping either half causes the exact drift this discipline eliminates.
-- Apply pending migrations automatically on app boot, and provide a standalone
-  migration command.
+Not on the list: anticipated growth, "microservices are best practice", résumé
+value, or a diagram someone drew before the first user signed up.
 
-## 6. Code conventions that prevent whole classes of bugs
+Two rules that make the decision honest:
 
-- **`data-testid` on every interactive element** at authoring time, with a
-  documented naming convention (`{component-kebab}__{element-role}`). Repeated
-  rows share one testid; scope by anchor text first. This makes testids a
-  stable contract the unit and e2e suites rely on — gaps defeat the point.
-- **Stable, typed wire contracts** between backend and frontend — define the
-  response shapes once and type both sides from them, so a field rename is a
-  compile error, not a runtime `undefined` that silently breaks a test or a
-  page. (We hit a demo-video outage purely from a wire-field rename that the
-  test helper still read under the old name.)
-- **Don't show internal design decisions to end users.** Keep rationale and
-  "why this is done this way" notes in code comments and docs, never in
-  user-facing labels or descriptions. Scrub internal slugs / design references
-  from shipped copy.
-- **Keep user-facing copy user-facing, internals internal** — and keep third-
-  party/external contract keys exactly as the external system requires,
-  even when they don't match your internal casing. Not everything is yours to
-  rename (external payload keys, notification-template placeholders).
+- **Extract through a reversible seam.** Establish the module boundary *inside*
+  the monolith first: a public module API, no caller touching internals, an
+  explicit write owner per table. If you cannot do that, the boundary is wrong
+  and extraction will not fix it — it will only make the violation more
+  expensive to notice.
+- **Move data before code.** Split the tables into a module-owned schema while
+  still in one database, and watch what breaks. A service whose data still lives
+  in someone else's schema is a distributed monolith with extra steps.
 
-## 7. Function design and module structure (decide on day one)
+### 5.2 Make the dependency rule executable
 
-Establish these rules before the first line of application code ships; retrofitting
-them into an existing codebase is expensive.
+Documented architecture decays: rules that depend on memory erode under
+turnover and deadline pressure, while the compiler happily accepts the import.
+Every rule therefore needs a **fitness function** — an automated check that
+fails the build.
 
-### Function size and extraction
-- **≤ 20 lines** target per function body; **50 lines hard limit**.
-- If you need a comment to explain a block, extract the block as a named function.
-- A function does one thing at one level of abstraction — no orchestration code
-  mixed with implementation detail inside the same function.
+Two kinds, and they answer different questions:
 
-### Guard clauses over nesting
-- Exit early with guard clauses at the top; never nest `if/if` for the happy path.
-- Maximum nesting depth: **3 levels**. Beyond 3, extract to a function.
+| Kind | Example | Answers |
+| --- | --- | --- |
+| **Structural** | "no module may import another module's `internal/`", "no cycles", "`domain` may not import `infra`" | *is this edge allowed?* |
+| **Metric** | afferent/efferent coupling (`Ca`, `Ce`), instability `I = Ce/(Ce+Ca)`, abstractness `A`, distance from the main sequence `D` | *is this component getting harder to change?* |
 
-### Parameter discipline
-- **≤ 3 parameters**. Beyond 3, introduce a Parameter Object (typed interface).
-- No boolean/flag parameters — split into two named functions.
-- Preserve Whole Object: pass the domain object, not extracted fields.
+By the book, `D = |A + I − 1|` and a component is "on the main sequence" at
+`D = 0`; the two failure zones below are what a threshold on `D` is actually
+catching.
 
-### Naming
-- Names reveal intent. Rename liberally as understanding evolves.
-- Booleans: `is`, `has`, `should`, `can` prefix.
-- Functions: verb + noun (`getUser`, `validateEmail`).
-- No abbreviations in domain code.
+Metrics are worth using for **trend**, not for gating: a component far from the
+main sequence sits in the *zone of pain* (concrete and unstable — everything
+depends on it and it changes constantly) or the *zone of uselessness* (abstract
+and stable — nobody uses it). But note the caveat that matters for this
+repository: **`A` counts interfaces and abstract classes, so it is an
+object-oriented metric.** In a language without them it must be reinterpreted
+before it means anything — a Rust trait, a TypeScript `interface`, and a Java
+`interface` are not the same kind of thing. Do not port the formula; port the
+question.
 
-### Encapsulation and mutation
-- **Never mutate in place** — always produce a new object (`{ ...old, field: value }`).
-- Separate Query from Modifier: a function either returns a value OR has a side
-  effect, never both.
-- Encapsulate Variable: mutable state lives behind a function boundary, not exposed
-  as raw mutable fields.
+Structural rules are the ones to enforce from day one, because they are cheap and
+unambiguous. Start with three: no cycles, no inward-pointing edge (infrastructure
+may depend on domain, never the reverse), and no reaching past a module's public
+surface.
 
-### Frontend: a component renders, a hook decides
+### 5.3 One owner per table
 
-Decide this before the first component ships — retrofitting it across a
-codebase costs weeks (we spent 22 extractions getting there).
+A shared database across two services is the distributed monolith in its purest
+form: it recreates every coupling of a monolith, then adds a network hop and
+loses the transaction. Within a monolith the same rule applies more
+cheaply — **one module owns the writes to a table**, and everyone else reads
+through that module's API or a deliberate read model.
 
-- **Split along the server boundary, not the "looks like state" boundary.**
-  The component owns layout/JSX, view-only state, event *wiring*, and DOM-only
-  side effects. The hook owns anything calling the API layer, any computation
-  over server data, any validation, and any fetching effect.
-- **The hook returns a plain object; the component destructures it.** No JSX in
-  the hook, and no API import in the component — that import is the checkable
-  signal: `grep -c "lib/api" <Component>.tsx` must be `0`.
-- **Hooks live beside their tests** (`lib/hooks/use<Feature>.ts` +
-  `use<Feature>.test.ts` using `renderHook`) and must not import from
-  `components/`.
-- **Move bodies, don't rewrite them.** A separation refactor has to be
-  verifiable by diffing the extracted function against the original with
-  whitespace normalised. Anything not byte-identical is a behaviour change
-  wearing a refactor's clothes.
+- Give each module its own schema (or a table-name prefix) even in one database;
+  it makes the boundary visible in every query and turns a future extraction into
+  a deployment change rather than a data migration.
+- Cross-module reads are a decision, not an accident: a published query
+  interface, a read model, or an event. A raw `JOIN` across two modules' tables
+  is the coupling the boundary existed to prevent.
 
-**And keep the JSX interior presentation-only.** This is the half that gets
-missed, because a component can satisfy every rule above and still compute
-domain rules per render — and most static gates never look inside the `return`.
+### 5.4 Pattern per module, not per system
 
-- Between `return (` and its closing `)`: only markup, bindings already computed
-  above the return, and wiring.
-- No `.filter()` / `.reduce()` / `.sort()` / `.find()` / `.some()` / `.every()`
-  in JSX. A bare `.map()` that renders a list is fine.
-- **Compute a derivation once.** `{xs.filter(p).length === 0 ? <Empty/> :
-  xs.filter(p).map(…)}` runs the predicate twice and reads as two rules that
-  happen to agree.
-- Inline handlers are wiring only — a setter, a navigation, a `.focus()`. The
-  moment one needs a branch or a computation, name it above the return.
-- No inline `new Date()` / `.toFixed()` / `JSON.parse` — use a formatter helper.
+**Do not apply one architectural style uniformly.** A single bounded context can
+carry a ports-and-adapters core slice and transaction-script supporting slices at
+the same time; the "architectural slices" principle is that each module takes the
+style its complexity justifies.
 
-A derivation inside JSX cannot be unit-tested without rendering; computed twice
-it can drift; and a cascade rule buried in an `onChange` is domain logic no test
-can reach.
+- The **core** slice — the thing the product is differentiating — gets the
+  isolation, the explicit ports, and the tests that make it independent.
+- A **supporting** slice — an admin CRUD screen, a lookup table — gets the
+  simplest thing that works: a handler, a query, a test. Wrapping it in five
+  layers is the *sinkhole* anti-pattern: a service layer that only forwards calls.
+- Uniform "Clean Architecture" across every module is a tax with no return on the
+  boring half of the system, and it is the most common way a greenfield pays for
+  architecture before it has any.
 
-### Module and directory structure
-- **Group by domain feature, not by type** (`routes-requests/`, `db/entities/`,
-  not `controllers/`, `models/`, `services/`).
-- Files ≤ 400 LOC typical; **800 LOC hard limit**. Files above 800 must be split
-  before merge.
-- When a file must be split, use the **barrel pattern**: extract per-domain files,
-  replace the original with `export * from './sub/index.tsx'` — zero call-site churn.
-- No circular dependencies between peer-domain files.
-- One concern per file; file names are the contract.
+### 5.5 Abstraction needs a second implementation
 
-### Code smell → remedy (quick reference)
+A port, interface, or trait earns its keep when **something else can implement
+it** — a second vendor, a second storage engine, a test double you actually use.
+Otherwise it is indirection with a maintenance bill.
 
-| Smell | Remedy |
-|---|---|
-| Long Function (> 50 lines) | Extract Function |
-| Deep Nesting (> 3 levels) | Guard Clauses |
-| Long Parameter List (> 3) | Introduce Parameter Object |
-| Boolean parameter | Remove Flag Argument |
-| Feature Envy | Move Function |
-| Message Chain | Hide Delegate |
-| God Module (> 800 lines) | Per-domain split + barrel |
-| Mutable Data | Encapsulate Variable, Separate Query from Modifier |
-| Duplicated Code | Extract Function |
-| Logic inside JSX (`filter`/`reduce` in the `return`) | Extract to a named binding above the return, or into the hook |
-| Same derivation computed twice in one expression | Introduce Explaining Variable |
-| Fat inline `onChange`/`onClick` carrying a branch or a computation | Extract Function (or move to the hook if it touches server data) |
-| Speculative Generality | Remove (YAGNI) |
+Two corollaries that apply in every language:
 
-Source: Martin Fowler's *Refactoring* (2nd ed.) via
-[5-minutes-or-less-refactoring](https://github.com/mikaelvesavuori/5-minutes-or-less-refactoring).
-For full details, see `CLAUDE-function-design.md` in project repos that carry this template.
+- **A port speaks the domain's language.** `DatabasePort` or `OrderRepository`
+  that mirrors SQL operations is a leak wearing an interface; the port should name
+  the business capability (`ForPersistingOrders`, `OrderStore`) and expose domain
+  types.
+- **One implementation is not a port, it is a prediction.** This template forbids
+  mocking the data layer (§3), so an interface whose only other implementation is
+  a mock is a prediction that has already been falsified.
 
-## 8. Validate early and honestly
+### 5.6 The anti-patterns that survive translation
 
-- **Static checking layer is not a substitute for real tests.** When the real
-  toolchain (compiler, test runner, DB) is unavailable in a sandbox, run
-  per-file syntax checks, execute pure modules, and grep structural invariants —
-  but **say exactly which layer you ran** and never claim "tests pass."
-- The real gate, before merge, is always: full type-check, full lint, and the
-  full test suites against a real DB/browser.
-- Append the validation caveat to commits made under constrained tooling so a
-  reviewer knows what still must run.
+These describe **dependency topology**, so they are language-independent — and
+they are the only anti-patterns this router carries.
 
-## 9. Reproducible local dev + environment story
+| Anti-pattern | Symptom | Fix |
+| --- | --- | --- |
+| **Big ball of mud** | change amplification, shotgun coordination, promiscuous data, dependency cycles | boundaries plus the fitness functions of §5.2 |
+| **Distributed monolith** | shared database, synchronous call chains, lock-step deploys, a mega shared library, one orchestrator doing all the flow | one owner per table, async or coarse-grained calls, and merge the services that always change together |
+| **Sinkhole architecture** | every layer passes the call through unchanged | collapse the layer, or keep it only where the 20% with real logic lives |
+| **Architecture in diagrams only** | the wiki says the domain is isolated; the import says otherwise | an executable rule, or the rule does not exist |
+| **Wrong boundary, rigorously enforced** | clean contracts wrapped around a line that cuts through a business concept | fix the boundary *before* adding enforcement — stricter is worse, not better |
+| **Premature distribution** | services, queues, and sagas for a load that one process could serve | modular monolith; extract on the §5.1 triggers |
 
-- Provide a one-command way to stand up the entire local environment
-  (database, backend, frontend, and any test doubles) so a new contributor or
-  agent can go from clone to running tests without tribal knowledge.
-- Separate secrets from config: committed `.env.example`-style templates,
-  uncommitted real `.env` files, and a distinct `.env.test` pointing at the
-  test DB — never a shared DB between dev and test.
-- Decide and document the toolchain choices up front (package manager, runtime,
-  ORM, test runners, CI) and make them **consistent across backend, frontend,
-  and tooling** — mixed/retrofit choices are where the friction lives.
+### 5.7 What is not in this section
 
-## 10. Deployment and CI/CD from day one: sandbox containers + SHIP-HATS (kept inert)
+The following are **language-specific by construction** and belong in the variant
+that owns them. If a rule names a construct — trait, interface, class, module,
+plugin, decorator — it is not a router rule.
 
-**Decide how the project ships before the first feature, and commit the
-deployment files with the first code.** Retrofitting a container contract and a
-government CI/CD pipeline onto a finished app surfaces every hidden assumption
-at once: a server bound to `localhost`, proxy headers trusted wrongly, unpinned
-images, secrets in config, scripts that only run on one shell.
+| Question | Node variant (§12) | Rust variant (§18) |
+| --- | --- | --- |
+| How is a port expressed? | a TS `interface`, erased at runtime | a trait, with the `dyn`/generic trade |
+| How is a boundary enforced? | packages, `exports`, dependency-cruiser | crates, visibility, the Cargo graph |
+| How is a dependency injected? | explicit arguments at a composition root | `State<AppState>`, generics, or `dyn` |
+| What does a module boundary cost? | little at build time, nothing at runtime | `pub` surface, compile units, inlining |
+| What is the language's native architecture anti-pattern? | layers with no enforcement; service locator | trait soup; one-impl abstractions; `Arc<Mutex<_>>` state |
 
-### 10.1 Container files for the sandbox platform (active from day one)
+**Sources (checked October 2026).** *Building Evolutionary Architectures* for
+fitness functions and the Martin metrics (`Ca`, `Ce`, `I`, `A`, `D`); the
+modular-monolith field guide for "a wrong boundary rigorously enforced is worse
+than none" and for per-module architecture; the distributed-monolith catalogue
+for the failure names; the AWS prescriptive guide and Cockburn's
+ports-and-adapters write-ups for when adapters pay; [Prime Video and Segment
+reversals](https://hostmedia.medium.com/the-modular-monolith-is-back-was-it-ever-really-gone-c3a5e36d5907)
+for the distribution evidence. The metrics caveat — `A` counts interfaces and
+abstract classes — is why §5.2 says to port the question, not the formula.
 
-- Start from the initial templates in
-  [`wshyang/greenfield/initial-templates/`](https://github.com/wshyang/greenfield/tree/main/initial-templates)
-  (`Dockerfile`, `Dockerfile.dev`, `Dockerfile.cloudflared`) and
-  **contextualise them**; never copy them blind. The generic `Dockerfile`
-  guesses the app type from files on disk (a `dist/` without `dist/index.js` is
-  served as a static site), which is wrong for any app with its own server.
-  Place the results at the repository root, next to a `.dockerignore`.
-- **The contract**: the app listens on **port 3000 on the container's
-  interface (`0.0.0.0`)**, never only on `localhost` inside the container. The
-  image sets `HOST=0.0.0.0` and `PORT=3000` (or the framework's spelling, e.g.
-  `HOSTNAME` for Next.js) and `EXPOSE 3000`, and the app reads them.
-- Production image: multi-stage, built from source with the lockfile
-  (`npm ci`, `--ignore-scripts` where the tree allows); a runtime stage holding
-  only what runs; an unprivileged **numeric** `USER` (platforms enforcing
-  `runAsNonRoot` cannot verify a name); base images pinned to an exact version
-  and distro release, never `latest`; a `HEALTHCHECK`.
-- `.dockerignore` keeps `.env*`, `.git`, `node_modules` and build output out of
-  every image, and must not exclude platform-supplied directories such as
-  `viper-agent/`.
-- `Dockerfile.dev` (cloud development through the platform's VIPER agent):
-  keep the agent contract (`COPY viper-agent/`, its entrypoint, `PORT=3000`,
-  `VIPER_APP_PORT=3001`), and configure the dev server for a forwarded host
-  name behind HTTPS (the dev server's host allowlist, proxy trust).
-- `Dockerfile.cloudflared`: pin the release, run with `--no-autoupdate`, take
-  `TUNNEL_TOKEN` at runtime only, route the tunnel to the app's service on port
-  3000.
-- **Behind a proxy, trust it by address, not by hop count.** The platform's
-  ingress reaches the container from a private address: believe
-  `X-Forwarded-For`/`-Proto` only from loopback, link-local and private ranges.
-  "Trust every hop" lets a client choose its own address (rate-limit evasion).
-  "Trust nothing" makes every client share the proxy's address (per-client
-  limits become global) and hides HTTPS (no `Secure` cookies). Check what your
-  framework does with a hop count: Fastify 5.12 silently reads one as "trust
-  nobody".
-- **Test the contract.** Feed the image's `ENV` through the app's real config
-  loader in a unit test; in CI, run the built image as a service and reach it by
-  its network alias on port 3000. Lint the Dockerfiles with hadolint.
+---
 
-### 10.2 SHIP-HATS: what the platform requires (research, October 2026)
+## 6. After the answer: prune, then unpack
 
-SHIP-HATS is GovTech's CI/CD platform within the Singapore Government Tech
-Stack. These findings come from the public SHIP-HATS documentation; the
-platform's GitLab and template sources need TechPass and SEED.
+The decision is not the deliverable; the project's own file is. Three stages, in
+this order — and the first one is deletion. **All three happen in the seeded
+project, never in `wshyang/greenfield`.**
 
-- **Platform.** GitLab Dedicated at `sgts.gitlab-dedicated.com` (Ultimate
-  tier). Alongside it: SonarQube (Community and Enterprise), Nexus Repository
-  Pro (proxies for npm, PyPI, Maven, Docker Hub, MCR, GHCR and more), Nexus IQ
-  (SCA), Fortify on Demand (SAST, DAST), Jira and Confluence. It holds code
-  classified up to CONFIDENTIAL (CLOUD-ELIGIBLE) / SENSITIVE-NORMAL.
-- **Templates.** `include:` the SHIP-HATS Templates from
-  `innersource/sgts/ship-hats/ship-hats-templates`, **pinned to a release tag**
-  (v1.1.12 as of September 2026; it is required for signing after the Rekor
-  decommissioning on 30 September 2026). `include:` cannot take variables, so
-  the ref must be a literal. The hidden jobs are used with `extends`:
-  - `.build-and-push-docker-image` (Kaniko);
-  - `.copy-docker-image-from-one-remote-registry-to-another`;
-  - `.generate-gitlab-attestation`;
-  - `.sign-container` and `.verify-container`;
-  - `.trivy-scan`, `.nexus-iq-scan`, `.sonarqube-scan`;
-  - `.invoke-awscli-commands-with-assumerole` (OIDC, no long-lived keys).
-- **E2E templates and their conventions.** The E2E templates (web app, Docker
-  single and multi service, Docker image CI) are no longer maintained after
-  v1.1.0, but they set the conventions the compliance framework relies on:
-  - stage names: `.pre`, `build`, `test`, `static-test`, `sign`,
-    `runtime-test`, deploy stages;
-  - job names, never to be renamed: `build-job`, and `deploy-prod-manual-job`
-    or `deploy-final-job`.
-- **Compliance is a Pipeline Execution Policy.** Since March 2026 it comes
-  from the WOG Security Policy Project; support for the old compliance
-  pipelines ended on 30 June 2026, and GitLab removes them in 20.0. Policy jobs
-  run in isolation and **never see the project's YAML variables**. Configure
-  them through project or group CI/CD variables: `CF_LEVEL`,
-  `SONAR_PROJECTKEY`, `SONAR_TOKEN`, `NEXUS_IQ_APP_ID`,
-  `NEXUS_IQ_USERNAME`/`NEXUS_IQ_PASSWORD`, `COSIGN_PASSWORD`, `FOD_PAT`. Without
-  tool credentials, the framework falls back to GitLab's native scanners.
-- **Compliance levels.** `CF_LEVEL` runs from 1 to 4, default 4:
+| Stage | Do | Done when |
+| --- | --- | --- |
+| **1. Choose** | ask §1 once; record `DR-00` as addendum `0001` (§1.1) | the answer is in the decision register, not only in chat |
+| **2. Prune** | delete the variants you did not choose, and this router, from the tree an agent will read | `ls` shows one standing-instruction file, not a menu |
+| **3. Unpack** | make the survivor repo-specific: placeholders, decisions, commands, dead rules | no `<placeholder>`, no rule the project has decided against, no pointer back here |
 
-  | Level | Adds                                                   |
-  | ----- | ------------------------------------------------------ |
-  | 1     | Static scans (`.pre` and `static-test` stages)         |
-  | 2     | DAST and deployment gating                             |
-  | 3     | Signing and verification                               |
-  | 4     | SLSA L1/L2 provenance and SBOMs                        |
+### 6.1 Prune: a project gets one file, not a menu
 
-- **Runners.**
+Copy the chosen variant as `CLAUDE.md`, then delete from the same working tree:
+the unchosen variant(s), this router, and any copied-but-unused scaffold.
 
-  | Runner                    | Tags                                             | Notes                                                                                   |
-  | ------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
-  | CStack                    | none (the default)                               | Kubernetes, non-root UID 65533, 4 vCPU / 8 GB; cannot build images                      |
-  | SHIP-HATS Docker runners  | `ship_docker`, `_med`, `_large`, `_arm`           | Root but not privileged: build images with Kaniko, not Docker-in-Docker                 |
-  | GitLab-hosted (pilot)     | `linux-small-amd64`, `-medium-`, `-large-`       | Privileged, ephemeral VMs                                                               |
+- **A leftover menu is not neutral.** An agent that can see two variants will
+  cite the wrong one, and every future reader has to re-derive why the other
+  file does not apply. Deleting it is the cheapest form of enforcement the set
+  has.
+- **Delete, do not archive in place.** Git history is the archive. A
+  `templates/` directory in the project is how the wrong file gets read at 2 a.m.
+- **`FDS_BUILDER.md` is the one exception.** It is language-agnostic and answers
+  a different question — the product spec, not the implementation. Keep it only
+  if the project will actually write that spec; otherwise it is also a menu.
+- **Never keep the runner-up "for reference".** Addendum `0001` already records
+  what was rejected and why, in one line each. The full second variant is not
+  more information; it is a second authority.
 
-  Jobs cannot exceed two hours.
-- **Supply chain.**
-  - Pull images and packages through the Nexus proxies
-    (`nexus-docker.ship.gov.sg`, `nexus-docker-mcr.ship.gov.sg`,
-    `https://nexus.ship.gov.sg/repository/npm-proxy/` and the others).
-  - Since 3 June 2026, Nexus IQ **fails components younger than seven days**
-    and integrity-rating violations: pin versions and let new releases age a
-    week.
-  - From 1 November 2026, SHIP-HATS Docker runners **block end-of-life and
-    blocklisted images**.
-  - Pin scanner images to trusted releases (Trivy ≥ 0.69.3 after the March
-    2026 incident).
-  - Nexus deletes artefacts after 180 days.
-- **Access.**
-  - From 16 October 2026, Git over HTTPS needs a personal access token or an
-    SSH key; passwords are refused.
-  - Tokens expire within 180 days.
-  - Only owners manage merge-request approval rules.
+### 6.2 Unpack: derive the repo's version, do not adopt the template whole
 
-### 10.3 The discipline: SHIP-HATS files from day one, kept inert
+1. **Replace every `<placeholder>`** and every unresolved "either / or" the
+   register has since settled. The file must read as if it were written for this
+   repository, not about it.
+2. **Record first, then delete the loser.** Each answer in the variant's own
+   register (`DR-01`…`DR-10` in Rust, the equivalent questions in Node) removes
+   the options it rejected from the body — a file that still offers both is a
+   decision not yet made.
+3. **Delete rules the project has decided against, in the commit that decides
+   it** (§0.6). Keep the deny-lists: they are the cheapest part to carry and the
+   most expensive to relearn.
+4. **Rewrite the commands to the repo's real ones.** A template command that does
+   not exist is worse than no command — agents run it, get a shell error, and
+   report the step done.
+5. **Pair with `FDS_BUILDER.md`** if you kept it; the spec is written in the
+   product's language, not the implementation's.
+6. **Bootstrap:** one command to a running stack, a real test DB, and the
+   container contract green before the first feature.
+7. **Splitting the file into `CLAUDE-<lang>-<area>.md` parts is optional.** Do
+   it when one file stops being readable in a single pass, not as a bootstrap
+   ritual; if you do, keep the decision/addenda and test sections in the first
+   file an agent reads.
 
-- **Carry the pipeline from the start, inert.** Each SHIP-HATS file gets a
-  `.shiphats` suffix (e.g. `file` becomes `file.shiphats`), so GitHub, GitLab
-  and local tooling ignore it until the project moves to SHIP-HATS:
-  - `.gitlab-ci.yml.shiphats`;
-  - `.gitlab/ci/*.gitlab-ci.yml.shiphats`;
-  - `sonar-project.properties.shiphats`;
-  - `.gitlab/CODEOWNERS.shiphats`;
-  - `.gitlab/merge_request_templates/Default.md.shiphats`.
-- **Placeholders, never secrets.** Values that differ per agency or project
-  are `@@SHIPHATS_<NAME>@@` placeholders. No secrets, ever: those are masked
-  CI/CD variables.
-- **A root script `activate-shiphats.sh` turns them active.**
-  - It runs locally on any remote environment: plain Bash 3.2+, no other
-    tooling.
-  - It **prompts for every value it needs**, with validation and defaults;
-    `--non-interactive` reads `SHIPHATS_*` variables.
-  - It renders every file before writing any, and refuses unknown placeholders
-    and existing files (`--force` overwrites).
-  - It removes the inert copies (`--keep-inert` keeps them).
-  - It prints the GitLab settings that cannot live in files: project CI/CD
-    variables, masked credentials, the compliance framework, branch protection
-    and code owners.
-- **What the pipeline covers.**
-  - It mirrors the local gates: typecheck, lint, format, unit and integration
-    tests with coverage for SonarQube (lcov), and end-to-end tests with video.
-  - It builds the image with Kaniko and smoke-tests the container contract
-    (port 3000 on the container's interface).
-  - It leaves scans, signing and provenance to the compliance framework, or
-    runs GitLab's scanners where the framework is not applied.
-  - It promotes images through a manual, compliance-gated job.
-- **Keep the inert files in step, in the same change** as the scripts and
-  tools they call, e.g. CI image tags matching the installed test runner. Test
-  it: activate into a scratch directory in the test suite, then check that
-  every stage, `needs` and `extends` resolves, that the output passes the
-  formatter, and that versions match. Validate against GitLab's CI schema with
-  `check-jsonschema --builtin-schema vendor.gitlab-ci`.
+Nothing in this router needs to be copied forward. If a project's `CLAUDE.md`
+still contains a link back here, the variant was not standalone enough — fix the
+variant. If the project still contains this router, pruning was skipped.
 
-### 10.4 Root scripts run everywhere
+---
 
-Scripts at the repository root (`dev.sh`, `activate-shiphats.sh`) must run on
-Bash 3.2, the `/bin/bash` macOS ships:
+## 7. Mixed-language projects
 
-- no associative arrays, `mapfile` or `${var,,}`;
-- possibly-empty arrays expanded as `${a[@]+"${a[@]}"}`, because under `set -u`
-  Bash before 4.4 calls an empty `"${a[@]}"` unbound.
+Allowed, and sometimes right — but it must be a decision, not an accident.
 
-Run their tests under a real Bash 3.2, which can be built from Apple's
-published source, and add a static guard so Linux CI catches regressions. Lint
-them with ShellCheck (`pip install shellcheck-py`).
+| Shape | Good when | Cost |
+| --- | --- | --- |
+| Node API + a Rust worker for one hot or CPU-bound job | a single measured bottleneck (parsing, image/PDF work, crypto) | a second toolchain, a second image, a job contract to version |
+| Rust API + a small Node tool for a JS-only SDK | one library has no usable equivalent | a sidecar or a build-time step, and two dependency policies |
+| Rust core crate with a Node/TS frontend | the domain deserves the type system, the UI needs the ecosystem | FFI/WASM boundary, or a clean HTTP split |
 
-## 11. What to decide before writing the first feature (checklist)
+Rules: **one language owns the data layer.** Two services writing the same tables
+through two ORMs is the two-source-of-truth trap with a network hop. Pick a
+single owner per table, and let the other call it. Also count the CI cost honestly
+— two toolchains means two caches, two lint policies, and two upgrade calendars,
+which is exactly the friction the single-language templates exist to remove.
 
-1. Source-of-truth spec location + addenda numbering.
-2. Test DB isolation + "tests-first, real DB, no repo mocks" rule.
-3. ORM + one-casing policy (no hand-written mappers).
-4. Soft-delete + UUIDv7 + real-actor-rows object model.
-5. Schema snapshot + migration twin-file workflow.
-6. `data-testid` convention + typed wire contracts.
-7. Test layout by type + Playwright video-on default.
-8. Realistic fixture-name pools + unique-per-run identifiers.
-9. Static-check fallback discipline + validation caveat.
-10. One-command local env setup + `.env`/.env.test separation.
-11. Function design rules: ≤ 50-line functions, guard clauses, ≤ 3 params, no flag args,
-    no mutation, Separate Query from Modifier, domain-based module grouping, 800-LOC
-    file hard limit, barrel-split pattern for god modules.
-12. Container contract (port 3000 on `0.0.0.0`, proxies trusted by address) and
-    the contextualised `Dockerfile`, `Dockerfile.dev`, `Dockerfile.cloudflared`,
-    `.dockerignore` at the repository root, tested.
-13. SHIP-HATS pipeline files kept inert (`*.shiphats`) with `activate-shiphats.sh`,
-    in step with the local gates, tested; root scripts Bash 3.2 compatible.
+---
 
-Answer these thirteen up front and a greenfield project avoids most of the rework,
-silent drift, and "we should have written that down" moments this template
-exists to prevent.
+## 8. Adding a new language variant
+
+Only do this if someone will maintain it. A variant that rots is worse than a
+variant that does not exist, because it carries the authority of the set.
+
+1. **Copy the nearest skeleton.** `GREENFIELD-RUST.md` is the fuller shape
+   (§0–§19, with the decision cards and the code-level sections); the Node
+   variant is the leaner one (§0–§12).
+2. **Keep the two load-bearing sections intact in intent**: the decision
+   interview and the addendum discipline. They are the reason the set exists.
+3. **Translate the invariant core of §3**, one row at a time, into the language's
+   idiomatic mechanism. If a row has no equivalent, say so and say what replaces
+   it — an honest gap beats a borrowed rule.
+4. **Resolve every fork with real code.** Each option needs a compiling excerpt
+   in the project's vocabulary, its costs, and a "choose this if". A menu of
+   adjectives is not a decision aid.
+5. **Date it and record versions** at the top ("verified October 2026"), the way
+   both existing variants do. An undated template is a rumour.
+6. **Name it `GREENFIELD-<LANG>.md`**, add it to the register in §9, and add the
+   pointer in the same commit.
+7. **Prove standalone-ness**: hand the file alone to someone who has never seen
+   this repo and check they can bootstrap a project. If they need the router or
+   the other variant, the file is not done.
+8. **Do not invent a third language choice in the card** until its variant
+   exists. §1-C exists precisely so the router never pretends.
+
+---
+
+## 9. Register
+
+| Variant | Status | Verified | Maintainer |
+| --- | --- | --- | --- |
+| `GREENFIELD-NODE.md` | active | October 2026 | <team> |
+| `GREENFIELD-RUST.md` | active | October 2026 | <team> |
+| Python, Go, Java/Kotlin, C# | not written | — | — |
+
+A row is only "active" if the version facts at its top are within a quarter and
+its CI claims still run. Demote before you let it mislead.
+
+---
+
+## 10. Keeping the router honest
+
+- **The router stays small.** Every rule added here is a rule that will drift
+  from the variant that owns it. Additions belong in the shared-invariant table
+  (§3) only when they are genuinely language-independent.
+- **Re-ask the question when the constraints change**, not on a calendar — a new
+  latency SLO, a mandated SSO, a team change. Record the new answer as a
+  superseding addendum; never edit `0001`.
+- **Keep the recommendation current.** If Rust becomes the default for this
+  organisation's context (or Node does), change §1's recommendation and §2's
+  rule of thumb in the same commit, and say why in the commit message.
+- **Re-verify the register quarterly.** A variant's "verified" date must mean the
+  versions and platform facts inside it were checked, not that the file exists.
+- **Judge the set by what survives unpacking.** If projects keep the runner-up
+  variant or the router in their tree, §6.1 is too soft — tighten the instruction,
+  not the project. A template set whose output is still a menu has not done its
+  job.
+- **Never let the router name a stack the variants do not implement.** The
+  failure mode is an agent citing §4's table as if it were a rule, and inventing
+  a project that matches neither template.
