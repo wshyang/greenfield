@@ -29,7 +29,8 @@ evolution (twin migrations vs pre-launch snapshot gate) · §6 code conventions 
 measurement, and closing bug classes · §9 local dev · §10 containers and
 SHIP-HATS · §11 day-one checklist · §12 architecture in Node.js and TypeScript ·
 §13 keeping this template honest · §14 porting an existing system to Node.js +
-TypeScript.
+TypeScript · §15 egress-restricted sandboxes and pure-Node client/server
+bootstrap.
 
 ---
 
@@ -587,6 +588,10 @@ committed load script (`autocannon` or `k6` in `bench/`) and a repeatable report
 - Decide and document the toolchain choices up front (package manager, runtime,
   ORM, test runners, CI) and make them **consistent across backend, frontend,
   and tooling** — mixed/retrofit choices are where the friction lives.
+- In egress-restricted cloud sandboxes where external binary CDNs and GitHub
+  Release redirects (`objects.githubusercontent.com`) are TLS-blocked, lean on
+  Node 22.22's built-in TypeScript stripping, `node:sqlite`, `node:test`, and
+  the offline Chromium playbook in §15.
 
 ## 10. Deployment and CI/CD from day one: sandbox containers + SHIP-HATS (kept inert)
 
@@ -1209,4 +1214,143 @@ porting the first route.
   backward-compatible during the shadow window.
 - **Delete legacy code, parity shims, and the shadow harness in one clean
   commit** once the rollback window closes.
+
+---
+
+## 15. Egress-restricted sandboxes and pure-Node client/server bootstrap
+
+Cloud coding sandboxes (such as Arena / E2B Debian 12 `bookworm` `x86_64`
+containers) ship with Node.js `v22.22+` and `npm` `10.9+` preinstalled and allow
+HTTPS to `registry.npmjs.org`, yet still break standard Node/Next.js/Playwright
+muscle memory whenever an `npm install` lifecycle hook reaches outside the SNI
+allowlist or a dev server rejects proxied preview `Host` headers.
+
+### 15.1 Sandbox baseline and `npm install` postinstall traps
+
+| Layer | Present / Succeeds (`HTTP 200`) | Missing / Fails TLS (`SSL_ERROR_SYSCALL`) |
+| --- | --- | --- |
+| **Runtime & system** | `node` (`v22.22.3`), `npm` (`10.9.8`), `npx`, `gcc`, `python3`, `git`, `gh` | Preinstalled `chromium`, `apt-get` (`deb.debian.org` blocked) |
+| **npm packages that work cleanly** | Pure-JS packages (`typescript`, `@types/node`, `fastify`, `drizzle-orm`, `vitest`, `playwright-core`) and npm-hosted optional platform packages (`esbuild` via `@esbuild/linux-x64`, `vite` via `@rollup/rollup-linux-x64-gnu`, `@toolchain-bin/aimeeting-sandbox-chromium`) | Packages whose `postinstall` fetches binaries from external CDNs or GitHub Releases (`playwright` hitting `cdn.playwright.dev`, `puppeteer`, `cypress`, `prebuild-install` packages hitting `github.com/.../releases/download` → blocked `objects.githubusercontent.com`) |
+| **Snapshot exclusions** | `/tmp/*` plus `node_modules`, `dist`, `build`, `.arena`, `.cache`, `.local`, `.vite` | Non-excluded directories under `/home/user` (e.g., `~/.aimeeting-browser`, `~/.cache` siblings) count toward the ~128 MB / 10,000-file snapshot cap |
+
+**Rule of thumb:** before adding a dependency in an egress-restricted sandbox,
+prefer Node 22 built-ins first, pure-JS npm packages second, and npm-tarball
+platform packages third; never install full `playwright` without
+`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` (prefer `playwright-core`).
+
+### 15.2 Node 22.22 built-ins that replace bundlers, test runners, and native addons
+
+When building a pure-Node backend and pure client-side TypeScript frontend from
+scratch (no Next.js), Node `22.22+` already ships every runtime primitive needed
+with *zero* runtime dependencies (`npm install --save-dev typescript @types/node`
+in ~2 s is only needed for strict `tsc --noEmit`):
+
+1. **Flagless native `.ts` execution and `node:test`.** Node 22.18+ enables
+   type-stripping by default: `node src/server/main.ts` and
+   `node --test test/*.test.ts` execute `.ts` modules directly in ~200 ms with
+   zero `tsx` or `ts-node` loader.
+2. **Zero-bundler client TypeScript via `node:module.stripTypeScriptTypes`.**
+   Built-in `stripTypeScriptTypes(tsSource, { mode: "strip" })` erases TypeScript
+   syntax in `< 1 ms` while preserving exact line/column offsets with whitespace:
+   - **Dev / single-process server:** whitelist `src/client/*.ts` and
+     `src/shared/*.ts`, strip types once into `Buffer`s at boot, and serve them
+     with `Content-Type: text/javascript; charset=utf-8`. Browser
+     `<script type="module" src="/client/app.ts">` then loads shared `.ts`
+     specifiers (`import { render } from "../shared/render.ts"`) natively with
+     identical paths across `node --test`, `tsc --noEmit`, and Chromium ES
+     modules.
+   - **Static `dist/` build:** run a 20-line `scripts/build-dist.ts` using
+     `stripTypeScriptTypes(src, { mode: "strip" }).replaceAll('.ts"', '.js"')` to
+     emit zero-dependency ES2024 assets (`~4.5 KB` total).
+3. **Embedded persistence via `node:sqlite` (`DatabaseSync`) — watch
+   `SQLITE_DQS=0`.** Built-in `import { DatabaseSync } from "node:sqlite"` avoids
+   `better-sqlite3` C++ `node-gyp` builds and blocked GitHub Release prebuilds.
+   Two details matter immediately:
+   - **Strict ANSI quoting (`SQLITE_DQS=0`):** Node compiles SQLite with
+     double-quoted string literals *disabled*. `"ok"` is parsed strictly as a SQL
+     identifier and throws `ERR_SQLITE_ERROR: no such column: "ok"`. Always use
+     single quotes (`'ok'`) or `?` prepared-statement parameters
+     (`db.prepare("INSERT INTO probes (ts) VALUES (?)").run(now)`).
+   - Pass `--disable-warning=ExperimentalWarning` in `package.json` scripts to
+     keep test and server output clean.
+
+### 15.3 Dual strict `tsconfig` layout for pure client + server TypeScript
+
+Split browser and server global scopes cleanly while sharing `src/shared/*.ts`
+and enforcing erasable syntax compatible with `stripTypeScriptTypes`:
+
+```json
+// tsconfig.base.json
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+- `tsconfig.server.json` extends `tsconfig.base.json` with
+  `"lib": ["ES2024"], "types": ["node"]` covering `src/server`, `src/shared`,
+  `scripts`, and `test`.
+- `tsconfig.client.json` extends `tsconfig.base.json` with
+  `"lib": ["ES2024", "DOM", "DOM.Iterable"], "types": []` covering `src/client`
+  and `src/shared` — guaranteeing client code never references `process` or
+  `Buffer`, server code never touches `document`, and `erasableSyntaxOnly: true`
+  rejects `enum`/`namespace`/parameter properties at typecheck time before
+  `stripTypeScriptTypes` ever sees them.
+
+### 15.4 Live-preview networking (`0.0.0.0`, Vite `allowedHosts`) and offline Chromium E2E
+
+1. **Pure `node:http` / Fastify preview rules:**
+   - Bind to `0.0.0.0` (`server.listen(port, "0.0.0.0")`), never `127.0.0.1`.
+   - Serve `GET /favicon.ico -> 204` so browser E2E checks observe zero console
+     404 errors, avoid localhost-only `Host`/`Origin` checks so
+     `https://{port}-{sandboxId}.e2b.app` succeeds, and call strictly relative
+     `/api/*` URLs from client code.
+2. **If using Vite for a larger SPA, configure `allowedHosts` and `proxy` on day
+   one:** Vite 6+ blocks unknown proxy `Host` headers by default
+   (`Blocked request. This host ("5173-<id>.e2b.app") is not allowed`). Always
+   configure `vite.config.ts` with:
+
+   ```ts
+   export default defineConfig({
+     server: {
+       host: "0.0.0.0",
+       allowedHosts: [".e2b.app"],
+       proxy: { "/api": "http://127.0.0.1:3001" },
+     },
+   });
+   ```
+
+3. **Headless Chromium 150 E2E inside the sandbox:** install `playwright-core`
+   and `@toolchain-bin/aimeeting-sandbox-chromium` from `registry.npmjs.org`,
+   **always** set `export AIMEETING_BROWSER_HOME="/tmp/aimeeting-browser"` (so
+   the `394 MiB` unpacked browser + Debian 12 `lib/*.so` closure stays outside
+   `/home/user` snapshots), and launch with:
+
+   ```js
+   const browserPkg = require("@toolchain-bin/aimeeting-sandbox-chromium");
+   const { chromium } = require("playwright-core");
+   const browser = await chromium.launch({
+     executablePath: browserPkg.executablePath(),
+     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+     env: {
+       ...process.env,
+       LD_LIBRARY_PATH: [browserPkg.libraryPath(), process.env.LD_LIBRARY_PATH]
+         .filter(Boolean)
+         .join(":"),
+     },
+   });
+   ```
+
 

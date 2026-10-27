@@ -51,7 +51,8 @@ honest validation · §9 local dev · §10 containers and SHIP-HATS · §11 day-
 checklist · §12 the eleven decision cards · §13 the strictness profile · §14 API
 and idiom rules · §15 design patterns · §16 concurrency and observability · §17
 performance and adversarial testing · §18 architecture in Go · §19 keeping this
-template honest · §20 porting an existing system to Go.
+template honest · §20 porting an existing system to Go · §21 egress-restricted
+sandboxes and pure-Go Wasm bootstrap.
 
 ---
 
@@ -1475,6 +1476,10 @@ by an audit, search `docs/decisions/` for an accepted ruling keeping it —
 - **Single-source version declarations.** Go version (`go.mod`), Postgres major
   version (`compose.yaml`), Node version (`.nvmrc` when `DR-05 = A`), and base
   image digests (`Dockerfile`) each have one authoritative home.
+- **Egress-restricted agent sandboxes (`go.dev` and `proxy.golang.org`
+  blocked).** Inside cloud containers whose outbound SNI allowlist permits only
+  `github.com`, `pypi.org`, and `registry.npmjs.org`, install Go 1.27 from the
+  `go-bin` PyPI wheel and configure `GOPROXY=direct GOSUMDB=off` per §21.
 
 ---
 
@@ -3707,6 +3712,159 @@ other circularly.
 - **Retire in one deliberate commit** once the rollback window closes: delete
   the shadow harness, legacy code, and temporary parity shims together rather
   than leaving dead scaffolding forever.
+
+---
+
+## 21. Egress-restricted sandboxes and pure-Go client/server bootstrap
+
+Cloud coding sandboxes (such as Arena / E2B Debian 12 `bookworm` `x86_64`
+containers) often omit `go` and `chromium` from the base image and block TLS
+handshakes to Google-hosted Go infrastructure. Standard `curl https://go.dev/dl/...`
+and default `go get` invocations fail immediately unless you bootstrap from an
+allowed registry and route module resolution directly through `github.com`.
+
+### 21.1 Sandbox baseline and outbound firewall reality
+
+| Layer | Present / Allowed | Missing / TLS-Blocked (`SSL_ERROR_SYSCALL` / `EOF`) |
+| --- | --- | --- |
+| **System tools** | `gcc`/`cc` (CGO & `-race` work natively), `ld`, `ar`, `node` (v22.22+), `npm`, `python3`, `pip`, `unzip`, `curl`, `tar`, `git`, `gh` | `go`, `gofmt`, `golangci-lint`, `chromium` |
+| **Outbound HTTPS** | `github.com`, `api.github.com`, `codeload.github.com`, `pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org` | `go.dev`, `dl.google.com`, `proxy.golang.org`, `sum.golang.org`, `golang.org`, `gopkg.in`, `deb.debian.org`, `objects.githubusercontent.com` |
+| **Snapshot exclusions** | `/tmp/*` plus workspace dirs named `.arena`, `.cache`, `.local`, `build`, `dist`, `node_modules`, `target` | Non-excluded directories under `/home/user` count toward the ~128 MB / 10,000-file turn-end snapshot cap |
+
+Keep `GOROOT`, `GOMODCACHE`, `GOCACHE`, and unpacked browser binaries under
+`/tmp/*` (or an excluded `.arena/` / `.cache/` folder) — never under default
+`~/go/pkg/mod`, which lives inside `/home/user` and is *not* excluded from
+workspace snapshots.
+
+### 21.2 Zero-guesswork Go 1.27.3 install from PyPI (~4 s)
+
+Full `linux/amd64` Go 1.27.3 (`go`, `gofmt`, stdlib, `lib/wasm`, and C/race
+tooling) ships as a prebuilt `manylinux` wheel on PyPI (`go-bin==1.27.3`):
+
+```bash
+set -euo pipefail
+GO_STAGE="/tmp/go-stage"
+export GOROOT="/tmp/go-1.27"
+rm -rf "$GO_STAGE" "$GOROOT" && mkdir -p "$GO_STAGE"
+
+pip download --no-deps --only-binary=:all: --dest "$GO_STAGE" "go-bin==1.27.3" >/dev/null
+unzip -q "$GO_STAGE"/go_bin-*.whl -d "$GO_STAGE/unpacked"
+mv "$GO_STAGE/unpacked/go" "$GOROOT"
+
+# MANDATORY: wheel zip archives strip +x bits on go, gofmt, compile, link, asm, cgo, and vet.
+chmod -R +x "$GOROOT/bin" "$GOROOT/pkg/tool"
+rm -rf "$GO_STAGE"
+
+export PATH="$GOROOT/bin:$PATH"
+export GOPROXY="direct"
+export GOSUMDB="off"
+export GOMODCACHE="/tmp/go-mod-cache"
+export GOCACHE="/tmp/go-build-cache"
+
+go version
+```
+
+### 21.3 Module resolution when `proxy.golang.org` and `sum.golang.org` are blocked
+
+1. **Always set *both* `GOPROXY=direct` and `GOSUMDB=off`.** Setting
+   `GOPROXY=direct` alone clones `github.com/*` modules via `git` and then fails
+   verification with `Get "https://sum.golang.org/lookup/...": EOF`.
+2. **Rewrite vanity import domains (`golang.org/x/*`, `gopkg.in/*`) to their
+   `github.com` mirrors in `go.mod`.** Under `GOPROXY=direct`, Go resolves
+   non-GitHub module paths via `https://<vanity>?go-get=1`, which the SNI
+   firewall drops (`unrecognized import path "golang.org/x/sync": EOF`). One
+   `replace` directive per `golang.org/x/*` family routes Git directly to
+   `github.com/golang/*`:
+
+   ```bash
+   go mod edit \
+     -replace=golang.org/x/sync=github.com/golang/sync@v0.12.0 \
+     -replace=golang.org/x/sys=github.com/golang/sys@v0.31.0 \
+     -replace=golang.org/x/net=github.com/golang/net@v0.37.0 \
+     -replace=golang.org/x/text=github.com/golang/text@v0.23.0 \
+     -replace=golang.org/x/crypto=github.com/golang/crypto@v0.36.0
+   go mod tidy
+   ```
+
+3. **Zero-external-module stdlib remains fastest for self-contained apps.** Go
+   1.22–1.27 `net/http.ServeMux` (`"GET /{$}"`, `"POST /api/verify"`), `embed`,
+   `encoding/json`, `log/slog`, `sync/atomic`, and `net/http/httptest` cover full
+   REST + static/Wasm servers with zero network dependency fetches and native
+   `go test -race ./...` support via Debian's preinstalled `gcc`.
+
+### 21.4 Pure-Go backend + pure-Go `GOOS=js GOARCH=wasm` frontend (no Next.js)
+
+When building a pure-Go backend paired with a compiled Go WebAssembly browser
+client from scratch, four Go 1.24–1.27 details save immediate debugging:
+
+1. **`wasm_exec.js` moved in Go 1.24+.** Legacy `$(go env GOROOT)/misc/wasm/wasm_exec.js`
+   no longer exists in Go 1.27 (`misc/wasm/` holds only `wasm_exec.html`). Copy
+   from `lib/wasm/` instead:
+
+   ```bash
+   cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" internal/server/static/wasm_exec.js
+   ```
+
+   Go 1.27 also ships `$(go env GOROOT)/lib/wasm/wasm_exec_node.js`, allowing
+   `GOOS=js GOARCH=wasm` packages to run unit tests directly under preinstalled
+   Node 22 in `< 0.1 s` without launching a browser:
+
+   ```bash
+   GOOS=js GOARCH=wasm go test -exec="node $(go env GOROOT)/lib/wasm/wasm_exec_node.js" ./internal/ui
+   ```
+
+2. **Three `syscall/js` runtime invariants (`//go:build js && wasm`):**
+   - **End `main()` with `select {}`.** Returning from `main()` terminates the
+     Go Wasm instance, causing subsequent `js.FuncOf` DOM event listeners to
+     throw `Error: Go program has already exited`.
+   - **Never perform blocking HTTP/channel waits synchronously on a `js.FuncOf`
+     callback stack.** Spawn `go func() { ... }()` inside `click`/`submit`
+     handlers; blocking the callback stack deadlocks the browser's single-threaded
+     JS event loop before `fetch()` can resolve.
+   - **Keep pure view/filter/JSON logic in a platform-neutral `internal/ui`
+     package** (no `syscall/js` import) so `go test -race ./...` exercises 100%
+     of rendering, escaping, and state filtering natively on `linux/amd64`.
+3. **Measured `.wasm` payload trade-off (`net/http` vs `syscall/js` `fetch`):**
+   - Importing `net/http` inside `cmd/wasm` gives zero-JS-glue `http.Get("/api/...")`
+     and `http.Post("/api/...", ...)` (backed by stdlib `roundtrip_js.go`), at a
+     measured binary size of **`~11.9 MB` raw / `~3.0 MB` gzipped**.
+   - Calling `js.Global().Call("fetch", ...)` via a thin `syscall/js` Promise
+     helper (dropping `net/http` from the Wasm import graph) cuts the artifact
+     **2.8×** to **`~4.2 MB` raw / `~1.17 MB` gzipped**. Serve `/app.wasm` with
+     `Content-Type: application/wasm` (and `compress/gzip` when `Accept-Encoding`
+     permits).
+4. **Single-binary build & test pipeline (`//go:generate` + `//go:embed`):**
+
+   ```go
+   // In internal/server/server.go:
+   //go:generate sh -c "cp \"$(go env GOROOT)/lib/wasm/wasm_exec.js\" static/wasm_exec.js && GOOS=js GOARCH=wasm go build -ldflags=\"-s -w\" -o static/app.wasm ../../cmd/wasm"
+   //go:embed static/index.html static/wasm_exec.js static/app.wasm
+   var embeddedAssets embed.FS
+   ```
+
+   ```bash
+   go generate ./... \
+     && go build -ldflags="-s -w" -o bin/go-service ./cmd/server \
+     && go test -race -v ./...
+   ```
+
+### 21.5 Live-preview networking and offline Chromium E2E verification
+
+- **Exact root route + `0.0.0.0` binding:** register the HTML shell on
+  `mux.HandleFunc("GET /{$}", ...)` (Go 1.22+ exact-root syntax; `"GET /"` acts
+  as a catch-all subtree prefix), add `mux.HandleFunc("GET /favicon.ico", ...)`
+  returning `204 No Content` so Chromium emits zero console 404s, bind
+  `http.Server` to `0.0.0.0:${PORT:-3002}` with `ReadHeaderTimeout: 5 * time.Second`,
+  accept proxy `Host` headers (`https://{port}-{sandboxId}.e2b.app`), and call
+  strictly relative `/api/*` paths from browser/Wasm code.
+- **Headless Chromium 150 E2E without `apt-get`:** install `playwright-core` and
+  `@toolchain-bin/aimeeting-sandbox-chromium` from `registry.npmjs.org` with
+  `export AIMEETING_BROWSER_HOME="/tmp/aimeeting-browser"` (keeps the `394 MiB`
+  unpacked browser + Debian 12 `lib/*.so` closure out of `/home/user` snapshots)
+  and pass `LD_LIBRARY_PATH: browserPkg.libraryPath()` +
+  `args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]` to
+  `chromium.launch(...)`.
+
 
 
 

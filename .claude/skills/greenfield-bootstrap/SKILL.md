@@ -24,6 +24,10 @@ hooks:
 
 ## Step-by-Step Procedure
 
+### Step 0 — Egress-Restricted Sandbox Check (When `rustc` / `go` / `chromium` Are Missing)
+
+If running inside a firewall-restricted container where `sh.rustup.rs`, `index.crates.io`, `go.dev`, or `proxy.golang.org` fail TLS (`SSL_ERROR_SYSCALL`), read `${CLAUDE_SKILL_DIR}/references/egress-sandbox-bootstrap.md` first to install Rust 1.99, Go 1.27.3, and offline Chromium 150 from allowed `registry.npmjs.org` / `pypi.org` mirrors without exceeding workspace snapshot limits.
+
 ### Step 1 — Settle `DR-00` (Backend Language)
 
 - If `$lang` (`$0`) or the user's message already names `go`, `node`, or `rust`, confirm it in one sentence without re-asking.

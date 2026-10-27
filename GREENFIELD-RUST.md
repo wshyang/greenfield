@@ -42,9 +42,11 @@ honest validation · §9 local dev · §10 containers and SHIP-HATS · §11 day-
 checklist · §12 the eleven decision cards · §13 the strictness profile · §14 API and
 idiom rules · §15 design patterns · §16 async and observability · §17 performance
 and adversarial testing · §18 architecture in Rust · §19 keeping this
-template honest · §20 porting an existing system to Rust. (§2.5-§2.8 test
+template honest · §20 porting an existing system to Rust · §21 egress-restricted
+sandboxes and pure-Rust Wasm bootstrap. (§2.5-§2.8 test
 discipline, §5.3 schema without migrations, §8.3-§8.4 measuring and closing the
-class, and §15.11 effects as a returned value are the newest subsections.)
+class, §15.11 effects as a returned value, and §21 sandbox bootstrap are the
+newest subsections.)
 
 ---
 
@@ -1411,6 +1413,10 @@ unreferenced" and "not wanted" are different findings.
   major version, Node version for the frontend, and image digests are declared in
   one place each (`rust-toolchain.toml`, `compose.yaml`, `.nvmrc`,
   `Dockerfile`) and referenced, not restated, everywhere else.
+- **Egress-restricted agent sandboxes (`sh.rustup.rs` and `index.crates.io`
+  blocked).** When running inside a firewall-restricted container that permits
+  only `github.com`, `registry.npmjs.org`, and `pypi.org`, skip `rustup` and
+  follow the offline sysroot + `wasm32-unknown-unknown` playbook in §21.
 
 ---
 
@@ -3672,3 +3678,211 @@ with the original cycle as its failing fixture.
 - **Retire deliberately.** Delete the harness, the cross-implementation parity
   checks and the old code in the cutover change, after the rollback window closes
   — not before, not never.
+
+---
+
+## 21. Egress-restricted sandboxes and pure-Rust client/server bootstrap
+
+Cloud coding sandboxes (such as Arena / E2B Debian 12 `bookworm` `x86_64`
+containers) often omit `rustc`/`cargo`/`lld`/`chromium` from the base image and
+enforce a strict TLS SNI outbound allowlist. Standard Rust workflows fail on the
+first command unless you bootstrap from an allowed package registry and design
+around `crates.io` and snapshot constraints.
+
+### 21.1 Sandbox baseline and outbound firewall reality
+
+Probe once, never guess:
+
+| Layer | Present / Allowed | Missing / TLS-Blocked (`SSL_ERROR_SYSCALL`) |
+| --- | --- | --- |
+| **System tools** | `gcc`/`cc`, `ld`, `ar`, `node` (v22.22+), `npm`, `python3`, `pip`, `curl`, `tar`, `xz`, `unzip`, `git`, `gh` | `rustc`, `cargo`, `rustup`, `clang`, `lld`, `wasm-bindgen`, `zstd`, `chromium` |
+| **Outbound HTTPS** | `github.com`, `api.github.com`, `codeload.github.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org` | `sh.rustup.rs`, `static.rust-lang.org`, `index.crates.io`, `static.crates.io`, `deb.debian.org`, **`objects.githubusercontent.com`** |
+| **Snapshot exclusions** | `/tmp/*` plus workspace dirs named `.arena`, `.cache`, `.local`, `build`, `dist`, `node_modules`, `target` | Tracked or non-excluded dirs under `/home/user` count toward the ~128 MB / 10,000-file turn-end snapshot cap |
+
+Two non-obvious traps follow immediately from that table:
+
+1. **GitHub Release binary URLs fail even though `github.com` is allowed.**
+   `https://github.com/<org>/<repo>/releases/download/...` returns `HTTP 302` to
+   `https://objects.githubusercontent.com/...`, which the SNI firewall drops.
+   Source archives on `https://codeload.github.com/<org>/<repo>/tar.gz/<ref>` and
+   `git clone https://github.com/<org>/<repo>.git` succeed.
+2. **Unpacked toolchains and browsers must never live in non-excluded `/home/user`
+   paths.** Install toolchains under `/tmp/rust-1.99` (or an excluded `.arena/` /
+   `.cache/` directory) so workspace snapshots stay fast and well below 128 MB.
+
+### 21.2 Zero-guesswork Rust 1.99 + `wasm32-unknown-unknown` install (~18 s)
+
+Official Rust 1.99.0 standalone installer archives (`rustc`, `cargo`, `clippy`,
+`rustfmt`, `rust-std` for `x86_64-unknown-linux-gnu` and
+`wasm32-unknown-unknown`, plus bundled `rust-lld` / `wasm-ld`) are mirrored on
+`registry.npmjs.org` under `@toolchain-bin/*`:
+
+```bash
+set -euo pipefail
+PREFIX="/tmp/rust-1.99"
+STAGE="/tmp/rust-stage"
+rm -rf "$PREFIX" "$STAGE" && mkdir -p "$PREFIX" "$STAGE/extract"
+cd "$STAGE"
+
+npm pack \
+  @toolchain-bin/rustc-1.99.0-x86_64-unknown-linux-gnu \
+  @toolchain-bin/cargo-1.99.0-x86_64-unknown-linux-gnu \
+  @toolchain-bin/rust-std-1.99.0-x86_64-unknown-linux-gnu \
+  @toolchain-bin/rust-std-1.99.0-wasm32-unknown-unknown \
+  @toolchain-bin/clippy-1.99.0-x86_64-unknown-linux-gnu \
+  @toolchain-bin/rustfmt-1.99.0-x86_64-unknown-linux-gnu
+
+for tgz in toolchain-bin-*.tgz; do
+  rm -rf "$STAGE/extract/package"
+  tar -xzf "$tgz" -C "$STAGE/extract"
+  bash "$STAGE/extract/package/install.sh" --prefix="$PREFIX" --disable-ldconfig >/dev/null
+done
+
+# MANDATORY: npm tarballs strip +x on nested sysroot linkers (rust-lld, ld.lld, wasm-ld).
+chmod +x \
+  "$PREFIX"/bin/* \
+  "$PREFIX"/libexec/* \
+  "$PREFIX"/lib/rustlib/x86_64-unknown-linux-gnu/bin/* \
+  "$PREFIX"/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/*
+
+rm -rf "$STAGE"
+export PATH="$PREFIX/bin:$PATH"
+rustc -V && cargo -V && cargo clippy -V
+```
+
+**Why that `chmod +x` block is mandatory.** `npm publish` preserves executable
+bits only on top-level `bin` entries declared in `package.json`. Without fixing
+permissions under `lib/rustlib/x86_64-unknown-linux-gnu/bin/` and `gcc-ld/`:
+
+- `wasm32-unknown-unknown` builds fail with
+  `error: could not exec the linker rust-lld: Permission denied (os error 13)`.
+- Native `x86_64-unknown-linux-gnu` builds *also* fail with
+  `collect2: fatal error: cannot find 'ld'`, because Rust 1.90+ defaults to
+  `-B<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld -fuse-ld=lld` and
+  `gcc` silently skips a non-executable `ld.lld`.
+
+### 21.3 Dependency strategy when `index.crates.io` is blocked
+
+Pick the lightest tier that satisfies the task:
+
+1. **Tier 1 — Zero external crates (`std` only, recommended for greenfield
+   exercises and pure-Rust microservices).** Rust 1.99 `std` provides
+   `std::net::TcpListener`, thread pools, atomics, `Arc<Mutex<_>>`, and full
+   `wasm32-unknown-unknown` memory/string containers. Zero network calls, ~3.5 s
+   full LTO `--release` builds, and zero Cargo config-discovery surprises.
+2. **Tier 2 — Leaf Git crates with zero `crates.io` dependencies.** A dependency
+   such as `itoa = { git = "https://github.com/dtolnay/itoa.git", tag = "1.0.15" }`
+   resolves directly over `github.com` *only* if its own `Cargo.toml` declares no
+   unpatched `crates.io` runtime dependencies.
+3. **Tier 3 — Crates with `crates.io` transitive dependencies (vendor from
+   `codeload.github.com`).** Two Cargo subtleties bite here:
+   - **`[patch.crates-io]` alone is not enough:** Cargo still attempts to fetch
+     `https://index.crates.io/config.json` before applying patches and aborts
+     with `[35] SSL connect error`. You *must* replace the `crates-io` source
+     using `[source.crates-io] replace-with = "vendored-sources"`.
+   - **Cargo reads `.cargo/config.toml` from `$PWD`, not `--manifest-path`:** if
+     a test harness runs `cargo build --manifest-path rust-service/Cargo.toml`
+     from the workspace root, a config placed only at
+     `rust-service/.cargo/config.toml` is ignored. Place `.cargo/config.toml` at
+     the workspace root (or `$CARGO_HOME/config.toml`).
+
+   ```bash
+   mkdir -p vendor/itoa .cargo
+   curl -sSL "https://codeload.github.com/dtolnay/itoa/tar.gz/refs/tags/1.0.15" \
+     | tar -xz --strip-components=1 -C vendor/itoa
+   printf '{"files":{}}\n' > vendor/itoa/.cargo-checksum.json
+
+   cat > .cargo/config.toml <<'TOML'
+   [source.crates-io]
+   replace-with = "vendored-sources"
+
+   [source.vendored-sources]
+   directory = "vendor"
+   TOML
+   # Build offline from workspace root:
+   cargo build --offline --manifest-path rust-service/Cargo.toml --release
+   ```
+
+### 21.4 Pure-Rust backend + pure-Rust Wasm frontend architecture (no `wasm-bindgen`, no Next.js)
+
+When `crates.io` is unreachable (`wasm-bindgen` unavailable) or a pure-Rust stack
+is required from scratch, pair a two-crate layout (`rust-wasm/` + `rust-service/`)
+driven by a single `build.rs`:
+
+- **Dual `crate-type = ["cdylib", "rlib"]` in `rust-wasm/Cargo.toml`.** The
+  `cdylib` target emits `rust_wasm.wasm` under `--target wasm32-unknown-unknown`,
+  while `rlib` lets `cargo test --manifest-path rust-wasm/Cargo.toml` run native
+  `x86_64` unit tests on state transitions, JSON parsing, filtering, and HTML
+  escaping in `< 0.2 s`.
+- **Size-ratcheted release profile on Wasm.** Without stripping, a minimal
+  `std`-linked `wasm32-unknown-unknown` binary is `~1.6 MB` of DWARF/symbol
+  tables; with the profile below it drops 23× to `~68 KB`:
+
+  ```toml
+  [profile.release]
+  opt-level = "z"
+  lto = true
+  codegen-units = 1
+  panic = "abort"
+  strip = true
+  ```
+
+- **Rust 2024 edition FFI discipline (`edition = "2024"`).**
+  - Attribute and extern blocks require explicit `unsafe`:
+    `#[unsafe(no_mangle)]` and `#[link(wasm_import_module = "env")] unsafe extern "C" { ... }`.
+  - `static mut` shared references are a hard error (`static_mut_refs`). Store
+    client state in `thread_local! { static STATE: RefCell<AppState> = ... }` —
+    safe on single-threaded `wasm32` and isolated per test thread on native
+    `x86_64`.
+  - Collapse nested `if` + `if let` into Rust 2024 `let` chains
+    (`if depth == 0 && let Some(s) = ...`) so `cargo clippy -- -D warnings`
+    passes `clippy::collapsible_if`.
+  - Export `wasm_alloc(len) -> *mut u8` and `wasm_dealloc(ptr, cap)` alongside
+    domain entry points (`wasm_init`, `wasm_on_http_response`, `wasm_set_filter`).
+    Keep the host JS bridge (`app.js`, ~45 lines) strictly limited to
+    `TextEncoder`/`TextDecoder` byte copying across `instance.exports.memory`,
+    `document.getElementById(id).innerHTML`, and `fetch(url)` callbacks.
+- **Single-command build via `rust-service/build.rs` with isolated
+  `--target-dir`.** Have `rust-service/build.rs` invoke
+  `cargo build --manifest-path ../rust-wasm/Cargo.toml --target wasm32-unknown-unknown --release`
+  passing **`--target-dir "$OUT_DIR/wasm-target"`** (sharing the parent `target/`
+  directory deadlocks on Cargo's `.cargo-lock`), copy `rust_wasm.wasm` to
+  `$OUT_DIR/app.wasm`, and embed it with
+  `include_bytes!(concat!(env!("OUT_DIR"), "/app.wasm"))`. Then one command builds
+  and verifies the entire full-stack binary (`~420 KB` stripped):
+
+  ```bash
+  cargo build --manifest-path rust-service/Cargo.toml --release \
+    && cargo test --manifest-path rust-service/Cargo.toml
+  ```
+
+### 21.5 Live-preview networking and offline Chromium E2E verification
+
+1. **Three live-preview invariants (`https://{port}-{sandboxId}.e2b.app`):**
+   - Bind `TcpListener` to `0.0.0.0:${PORT:-3001}`, never `127.0.0.1`.
+   - Accept arbitrary proxy `Host`/`Origin` headers (never hardcode `localhost`
+     allowlists) and serve `/app.wasm` with `Content-Type: application/wasm`
+     (`WebAssembly.instantiateStreaming` rejects `application/octet-stream`) plus
+     `GET /favicon.ico -> 204 No Content` so browsers log zero 404 console errors.
+   - Browser/Wasm code runs in the user's browser outside the sandbox: call
+     relative paths (`/api/commands`, `/api/verify`), never
+     `http://localhost:3001`.
+2. **Headless Chromium 150 inside the sandbox without `apt-get`:** install
+   `playwright-core` alongside `@toolchain-bin/aimeeting-sandbox-chromium` (which
+   bundles Chromium plus its 165-file Debian 12 `lib/*.so` closure) and **always**
+   redirect `AIMEETING_BROWSER_HOME` to `/tmp`:
+
+   ```bash
+   mkdir -p /tmp/browser-driver && cd /tmp/browser-driver
+   npm init -y >/dev/null
+   npm install --no-audit --no-fund playwright-core @toolchain-bin/aimeeting-sandbox-chromium
+   export AIMEETING_BROWSER_HOME="/tmp/aimeeting-browser"
+   ```
+
+   Pass `executablePath: browserPkg.executablePath()`,
+   `args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]`, and
+   `env: { ...process.env, LD_LIBRARY_PATH: browserPkg.libraryPath() }` to
+   `chromium.launch(...)`. Leaving `AIMEETING_BROWSER_HOME` unset unpacks
+   `394 MiB` into `~/.aimeeting-browser` inside `/home/user` and overflows the
+   128 MB workspace snapshot limit.
+
