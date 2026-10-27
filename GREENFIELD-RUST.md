@@ -1,8 +1,9 @@
 # GREENFIELD-RUST.md — CLAUDE.md template for new Rust projects
 
-**Standalone.** This is the Rust variant of the greenfield template set; you
-reached it from the language question in `GREENFIELD.md`, and it is the Rust
-sibling of `GREENFIELD-NODE.md`. Nothing here depends on reading either file. It
+**Standalone.** This is the Rust variant of the greenfield template.
+`GREENFIELD.md` is the language-neutral template it was derived from; its
+lessons are folded in here, so nothing in this file depends on reading it, and
+no other sibling file is assumed to exist. It
 is a **standing-instructions template** to copy into a new repository's
 `CLAUDE.md` (and later split into focused section files). It is deliberately
 project-agnostic — no product name, no feature references, no hardcoded service
@@ -11,14 +12,16 @@ names.
 It does three jobs:
 
 1. **It fixes the invariants** that are cheap on day one and expensive to
-   retrofit: real-database tests, soft deletion, UUIDv7, twin schema files, a
-   strictness profile, a container contract, honest validation.
+   retrofit: real-database tests, soft deletion, UUIDv7, a schema that is checked
+   against what the code expects (twin files, or a single snapshot with a
+   version gate while nothing is deployed — `DR-11`), a strictness profile, a
+   container contract, honest validation.
 2. **It stops the agent from silently choosing on the user's behalf.** Rust has
    several equally defensible answers for the data layer, the wire contract, the
    UI, auth, and the runtime image. §0.3 defines a **decision interview**: the
    agent must ask the user, present each option with a real code example and its
    trade-offs, recommend one, and record the answer as an addendum. This
-   document ships the ten question cards (`DR-01`…`DR-10`), ready to send.
+   document ships the eleven question cards (`DR-01`…`DR-11`), ready to send.
 3. **It settles the code-level idioms that reviewers argue about.** §13 is the
    `strictest`-equivalent lint and compiler profile; §14 covers signatures,
    naming, derives, and `#[non_exhaustive]`; §15 is the pattern allow-list and
@@ -36,10 +39,12 @@ in this file as "verified then", not "latest forever".
 living spec · §2 tests · §3 test infrastructure · §4 database discipline · §5
 schema evolution · §6 code conventions · §7 function and module design · §8
 honest validation · §9 local dev · §10 containers and SHIP-HATS · §11 day-one
-checklist · §12 the ten decision cards · §13 the strictness profile · §14 API and
+checklist · §12 the eleven decision cards · §13 the strictness profile · §14 API and
 idiom rules · §15 design patterns · §16 async and observability · §17 performance
 and adversarial testing · §18 architecture in Rust · §19 keeping this
-template honest.
+template honest · §20 porting an existing system to Rust. (§2.5-§2.8 test
+discipline, §5.3 schema without migrations, §8.3-§8.4 measuring and closing the
+class, and §15.11 effects as a returned value are the newest subsections.)
 
 ---
 
@@ -47,10 +52,22 @@ template honest.
 
 ### 0.1 Copy, then unpack
 
-- Copy this whole file as `CLAUDE.md` in the new Rust repository, delete the
-  greenfield set's other files (the router and the Node variant) in the same
-  commit, then replace every `<placeholder>`. Keep the `DR-` identifiers intact:
+- Copy this whole file as `CLAUDE.md` in the new Rust repository, delete any
+  other greenfield template files copied alongside it in the same commit, then
+  replace every `<placeholder>`. Keep the `DR-` identifiers intact:
   they are referenced by addenda, CI checks, and code comments.
+- **Preferred progressive-disclosure unpack (`.claude/` skills + lean `CLAUDE.md` /
+  `AGENTS.md`):** because a 3,660-line `CLAUDE.md` taxes every turn and exceeds
+  Claude Code's 5,000-token post-compaction skill cap, copy `.claude/` alongside
+  this repository and run `/greenfield-bootstrap rust` to render a `<= 130`-line
+  `CLAUDE.md` from `.claude/skills/greenfield-bootstrap/assets/CLAUDE.lean-template.md`.
+  Keep its compact two-column `.claude/` dispatch table (mapping tasks to Claude
+  Code skills **and** to explicit `.claude/skills/*/SKILL.md`,
+  `.claude/rules/*.md`, and `.claude/skills/*/scripts/*.sh` fallback paths for
+  non-Claude `AGENTS.md` harnesses that lack auto-loaders/hooks), prune unused
+  `go-*.md` / `node-*.md` references + `greenfield-bootstrap/` (and
+  `greenfield-port/` if not porting), and maintain **one** root file (`AGENTS.md`
+  with `@AGENTS.md` in `CLAUDE.md`, or a symlink — never two diverging copies).
 - Splitting each `##` section into `CLAUDE-rust-<area>.md`
   (`CLAUDE-rust-database.md`, `CLAUDE-rust-deployment.md`, …) behind a top-level
   index is **optional**, not a bootstrap step. Do it when one file stops being
@@ -71,11 +88,11 @@ discipline gets traded away for speed.
 
 | Class | Meaning | Agent behaviour |
 | --- | --- | --- |
-| **Invariant** | Fixed by this document because the cost of retrofitting is high and the answer does not vary by project (soft delete, UUIDv7, real-DB tests, no mocked repositories, twin schema files, port 3000 on `0.0.0.0`, no hand-written mappers, no `unwrap` in request paths). | Implement as written. If the project genuinely cannot comply, **stop and ask**; if approved, record an addendum that names the invariant being waived and why. Never waive silently. |
-| **Fork** | Two or three defensible Rust answers with different costs, and no way to infer the team's preference from the repo (`DR-01`…`DR-10`). | **Ask before writing the first line in that area.** Use the question card from §12. Record the answer. |
+| **Invariant** | Fixed by this document because the cost of retrofitting is high and the answer does not vary by project (soft delete, UUIDv7, real-DB tests, no mocked repositories, a schema checked against the code (`DR-11` picks the mechanism), port 3000 on `0.0.0.0`, no hand-written mappers, no `unwrap` in request paths). | Implement as written. If the project genuinely cannot comply, **stop and ask**; if approved, record an addendum that names the invariant being waived and why. Never waive silently. |
+| **Fork** | Two or three defensible Rust answers with different costs, and no way to infer the team's preference from the repo (`DR-01`…`DR-11`). | **Ask before writing the first line in that area.** Use the question card from §12. Record the answer. |
 
 The invariants live in §2, §4, §5, §6, §7, §8, §10, and §13–§17. The forks are
-exactly `DR-01`…`DR-10`, listed in §0.7.
+exactly `DR-01`…`DR-11`, listed in §0.7.
 
 §15 is a hybrid: the pattern allow-list is a default, but each pattern names the
 condition under which it is **wrong** ("use an enum instead when…"). Applying
@@ -175,8 +192,8 @@ B. diesel 2.3 + diesel-async 0.9 — typed DSL over a generated schema
            .select(RequestRow::as_select())
            .first(conn).await.optional()?
    Pros:  Illegal columns/joins fail to compile without any database;
-          closest literal twin to Drizzle's schema-as-source-of-truth;
-          query pipelining.
+          the schema is the single source of the types, as in schema-first
+          ORMs from other languages; query pipelining.
    Costs: `schema.rs` must be generated and kept in step; heavier compile
           times on wide schemas; the DSL is a second language.
    Choose if: you want the type system to be the schema and accept codegen.
@@ -226,9 +243,10 @@ sqlx 0.9 with `query_as!`, a committed `.sqlx/` offline cache, and `#[sqlx::test
 - sea-orm 2.0: <…>
 
 ## Impact
-- Every query lives in `src/<domain>/queries.rs`; handlers never hold SQL.
-- CI runs `cargo sqlx prepare --check` and fails on a stale `.sqlx/`.
-- §2's test pattern is `#[sqlx::test]`; §5's migrator is `sqlx::migrate!`.
+<!-- Boxes, not prose (§1.1): an id, one action, the exact file or command, a done-when. -->
+- [ ] 0007-1 Every query lives in `src/<domain>/queries.rs`; handlers never hold SQL — `rg -n "query!?\(" src --glob '!**/queries.rs'` is empty
+- [ ] 0007-2 CI fails on a stale `.sqlx/` — job runs `cargo sqlx prepare --check`; done when a deliberately edited query turns it red
+- [ ] 0007-3 §2's test pattern is `#[sqlx::test]` and §5's migrator is `sqlx::migrate!` — done when both appear in the first integration test and `main.rs`
 ```
 
 Rules for the addendum: it names the **rejected** options and why. Six months
@@ -265,10 +283,11 @@ revisited.
 | `DR-08` | Background work | DB outbox + in-process worker · `apalis` · none yet | outbox | §4, §9, §10 | Medium — job semantics |
 | `DR-09` | Runtime image | distroless (glibc) · debian-slim · alpine (musl) | distroless | §10.1 | Low — one Dockerfile stage |
 | `DR-10` | Dev orchestration | `just` · `cargo xtask` · `make` | `just` + thin xtask | §9, §10.4 | Low — developer muscle memory |
+| `DR-11` | Schema evolution | twin snapshot + numbered migrations · single snapshot with version gate (nothing deployed yet) | twin migrations once anything is deployed; single snapshot before | §5, §8, §9 | Medium — adding migrations later is easy; reconstructing history is not |
 
 **Batch 1 (foundation):** `DR-01`, `DR-02`, `DR-03`.
 **Batch 2 (product surface):** `DR-04`, `DR-05`, `DR-06`, `DR-07`.
-**Batch 3 (operations):** `DR-08`, `DR-09`, `DR-10`.
+**Batch 3 (operations):** `DR-08`, `DR-09`, `DR-10`, `DR-11`.
 
 The sections below are written against the **defaults** in that table. If the
 user picks a different option, the named section changes; nothing else does.
@@ -286,6 +305,8 @@ writing code that satisfies neither answer.
 | `DR-05 = Leptos`/Askama + `DR-04 = utoipa` | OpenAPI → TypeScript buys little when the client is Rust or server-rendered HTML | downgrade `DR-04` to `ts-rs` only if a TypeScript island remains, else record "no generated client" with the route-registration test kept |
 | `DR-02 = sea-orm` + §4.3 views | sea-orm entities must model the `active_*` view or the base table consistently | pick one per entity, and put the liveness filter in a single `find_active` scope |
 | `DR-09 = alpine` + `DR-01 = axum` | musl + some TLS/C crates need explicit targets and allocator tuning | only if the team has measured it; otherwise distroless |
+| `DR-11 = B` + any CI job that restores a database | a restored dump carries an older version stamp, and the gate will (correctly) refuse it | restore only into a throwaway database, then reset; never restore over a database the gate protects |
+| `DR-11 = B` + `DR-02 = sqlx` | the offline query cache (`.sqlx/`) is generated against a live schema; a stale cache after a snapshot edit fails to compile | regenerate `.sqlx/` in the same change as the snapshot edit, and keep `cargo sqlx prepare --check` in CI |
 
 If two answers cannot be reconciled, the later one wins and the earlier addendum
 is superseded — never left in place contradicting its successor.
@@ -326,6 +347,90 @@ remembered.
   That instruction is the difference between a codebase you can reason about and
   a puzzle box.
 
+### 1.1 Plans and designs are written in two cuts
+
+A design document that stops at the generic cut cannot be tracked, handed to an
+agent, or checked. Write every plan, design and addendum in two passes:
+
+1. **Cut one is the shape**: scope, modules, decisions, trade-offs, in prose a
+   person can read.
+2. **Cut two is the work**: under every prose section, a `Verify / do` list of
+   boxes. Each box has an id, one imperative action, the exact file, command,
+   query or number it concerns, and an observable *done when*:
+
+```markdown
+- [ ] ST-V2.3 25 transaction sites move to `store` — `grep -rc "\.transaction(" src` prints 25; each has a `Tx` use listed in `store/README.md` — done when the list has 25 rows
+```
+
+Rules that keep the second cut honest:
+
+- **A box that names no path, command, query or number is not a task.** Reject
+  boxes whose action is *ensure*, *consider*, *review*, *improve* or *handle*.
+- **A claim about the old system gets a re-check command.** Every figure copied
+  from a survey, a report or an agent summary is a claim, not a measurement: in
+  one port, five of about twenty reported counts were wrong (a function count, a
+  table count, a schema count, a cache-site count, a clock-read count), and each
+  had already been copied into three documents and a task before it was
+  re-counted. Re-run the count, correct it where it appears, and keep the command
+  beside the number.
+- **A design decision gets the id of the task that implements it, and the id of
+  the test that proves it.** A decision with neither is a wish; give it a new task
+  or strike it.
+- **A change vector becomes a rehearsal.** "A new event kind touches only X and Y"
+  is checked by making the change on a scratch branch and comparing the compiler's
+  error list with the claim; it is the cheapest executable test of a module
+  boundary.
+- **Prove the check can fail.** Run a small gate over the documents that reports
+  prose-only sections, duplicate ids and banned lead verbs, and run it once on a
+  fixture that violates all three. A gate that has never failed has not been shown
+  to work (§2.7). Resolve cross-references the same way: with a fake id as a
+  negative control, and by reading each cited test beside the claim it is cited
+  for, because an id can exist and still mean something else.
+- **Say what is blocked.** Mark boxes that need a tool you do not have yet
+  (`(needs cargo)`), so "all boxes pass" cannot silently mean "all boxes that could
+  run".
+
+#### 1.1.1 Every task carries its own exit criterion
+
+A `Verify / do` list under each prose section (above) checks the *claims* a design
+makes. The *build* task lists need the same discipline, and are where it slips,
+because a task title reads as specific while saying nothing about when it is
+finished.
+
+- **Every task has a `done when`, and the `done when` is measurable.** It contains
+  at least one of: a command in backticks and the output it must print; a number;
+  the id of a test that must pass; a file or path that must exist or must be
+  absent. "Works", "looks fine", "is correct" and "is good" are rejected, because
+  two people would disagree about whether they are true.
+- **A parent is covered when it or any of its children has one.** Put the exit
+  criterion where the work ends, not on both levels; otherwise the count of
+  "missing" criteria is inflated by one per child and the real gap is hidden.
+- **Name the test that proves it, and make that test exist.** The usual
+  `done when` is "test X passes". If the task cites a test that is not in the test
+  specification, add the test in the same edit; a criterion that cites a ghost is a
+  wish.
+- **Run every command you write into a `done when` once, before you leave it
+  there.** A count command that prints 0 where the criterion says 21 (because the
+  file lists names in backticks and the pattern did not) is worse than no command,
+  since the next reader will believe the command over the prose.
+- **Measure the gap before you declare the document done.** A gate that checked
+  only the shape of the document (every section has a list, ids are unique) reported
+  no problems while four in five tasks had no exit criterion at all. Before
+  claiming a plan is specific, count the tasks with no measurable `done when`; the
+  count is the status. In one port roughly four in five task lines had none (and
+  about two in three top-level tasks still lacked one after crediting parents);
+  closing the gap took a day of careful edits, not a quick fix, which is why the
+  measurement comes first and sizes the work.
+- **Credit the shape check honestly.** State in the document what the gate cannot
+  judge: it can see that a `done when` has a token, not that it is a good test.
+  Reading each cited test beside the claim, and re-running each quoted figure,
+  stays a human step.
+- **The checker is repository automation, so in a Rust project it is an `xtask`
+  command** (`cargo xtask check-plan-docs`, with a `--check` mode used by the verify
+  script), not a script in another language. Until the workspace exists, keep it
+  out of the repository rather than committing a throwaway, and record it as a
+  task of the first phase.
+
 ---
 
 ## 2. Write tests first, and keep them real (no mocks where it counts)
@@ -340,7 +445,9 @@ about. The rules below are **invariants**, not preferences.
 - Use a **separate test database**, never the dev database. `#[sqlx::test]`
   creates and drops a uniquely named database per test; `sqlx::test(migrations =
   "./migrations")` applies the real migrations, so the test schema is the shipped
-  schema.
+  schema. (Under `DR-11 = B` there are no migrations: the test database applies
+  the embedded snapshot through the same function boot uses, which gives the same
+  guarantee.)
 - **Exercise the real router through a real request**, without opening a
   listening socket. Axum's `Router` implements `tower::Service`, so `oneshot`
   replaces the "app object" pattern from the Node template:
@@ -385,10 +492,14 @@ async fn owner_can_read_own_request(pool: sqlx::PgPool) {
   resource, using a real id substitution (IDOR), must be rejected for that
   resource — not merely "no cookie → 401", which proves authentication and not
   authorization.
-- The negative test asserts the exact status (usually `404`, not `403`, so the
-  response does not disclose existence) and that **no row changed**. Assert the
-  database state after a rejected write; status codes alone have let writes
-  through in practice:
+- The negative test asserts the exact status **and** that **no row changed**.
+  Which status is a project decision to record once and keep: `404` for a
+  resource the caller must not learn exists (this template's default), or
+  `401`/`403` where the caller is allowed to know it exists and the existing
+  clients already depend on those codes. A port of an existing system keeps the
+  old codes until a separate decision changes them. Assert the database state
+  after a rejected write; status codes alone have let writes through in
+  practice:
 
 ```rust
 #[sqlx::test(fixtures("fixtures/actors.sql", "fixtures/requests.sql"))]
@@ -452,8 +563,114 @@ fn formats_bytes(#[case] bytes: u64, #[case] expected: &str) {
 - **A panic in a request path is a test failure, not a 500.** Integration tests
   run with the same lint posture as release (§8), and a `CatchPanicLayer` exists
   only to keep the process alive — never to let a test pass.
-- Do not test private functions to inflate coverage. Coverage is a diagnostic
-  (`cargo llvm-cov nextest`), never a gate that rewards `#[cfg(test)]` laundry.
+- Do not test private functions to inflate coverage. Coverage is never a target
+  that rewards `#[cfg(test)]` laundry; it is a **ratchet** (§2.7).
+
+### 2.5 What the assertion must look at
+
+A test that runs the broken code and passes is worse than none, because it
+certifies the defect. Decide these before the first feature, since the failure is
+invisible: the suite is green.
+
+- **Assert the state that outlives the test**, not the state in the response or on
+  screen. Read the row back (`sqlx::query!`) or fetch it again through a second
+  endpoint. A preview, a cached view or a draft can be right while the stored value
+  is wrong, and the stored value is what the user gets back tomorrow.
+- **Exercise the path the user takes, not the path you built.** Where two routes
+  reach one outcome (a dedicated confirm and a general save), test the one people
+  reach first.
+- **Behaviour that exists to be seen is asserted in a real browser**, as computed
+  presentation. A handler test cannot see that a style never applied.
+- **Write the end-to-end test before the fix and watch it fail for the right
+  reason.** A spec written after the implementation is shaped around what was
+  built.
+- **Build fixtures from the wire type, never from memory of it.** A fixture that no
+  longer resembles real data is a test that cannot fail. In Rust the compiler helps
+  only if the fixture is a typed value: construct the response struct, then
+  serialise it, rather than writing a JSON literal. Run the whole gate as one
+  command; running the parts separately is how a part goes unrun for weeks.
+
+### 2.6 Sabotage every test and watch it fail (the bite check)
+
+A test you have never seen fail is a hypothesis. When a test goes green, break the
+code it exists to protect and watch it go red. One sabotage per promise, applied
+one at a time, reverted immediately.
+
+- **Write down what you broke.** The addendum for a consequential change ends with
+  the sabotages that were watched to fail ("paid the losing side; read the live
+  value instead of the snapshot; dropped the reason on the wire"). The sentence is
+  the evidence the tests are load-bearing, and writing it forces you to name the
+  promises — which is where you find the one no test holds.
+- **Sweep a whole area now and then.** Write 20-30 mutations that each break one
+  promise, run the suite against each, and record which survive. The survivors are
+  the deliverable.
+- **Use a mutation tool for the mechanical part**, not instead of the judgement:
+  `cargo mutants`, scoped to the modules where a wrong assertion is an incident
+  (authorization, money, state machines), nightly (§17.5). A surviving mutant in an
+  authorization check is a finding; one in a `Display` impl is noise.
+- **Harness traps that make a sweep lie:**
+  - A mutation that does not compile reads as a survivor in a naive classifier.
+    Treat "build failed" as **invalid**, never as "nothing noticed".
+  - One run is not a verdict; confirm a lone result by re-running the owning test
+    several times.
+  - A mutation that only costs performance survives a behaviour suite. Pin cost
+    promises with an explicit assertion (an allocation or call count, not a
+    wall-clock time).
+  - Sabotage each half of a compound guard (`a || b`) separately.
+  - Restore the source and verify the restore with a diff, every time.
+
+### 2.7 Make the suite enforce its own rules
+
+A convention nothing checks decays, and a threshold nothing runs is a comment.
+
+- **Write a repo-specific standards checker** (`cargo xtask check-standards`) for
+  invariants no linter expresses: layering ("this crate never imports that one"),
+  "no raw `DELETE` outside the one module", "every table the data layer maps exists
+  in the schema", "no user-facing string is inlined outside the copy module".
+  Rules are cited by number, so append, never insert.
+- **A checker must be proven to fail.** Every rule ships with a fixture that
+  violates it, and a test asserts the rule flags that fixture. A rule that scans
+  with a regex written for one quoting style can match a tiny fraction of what it
+  guards and report "clean" forever; the only defence is a fixture in the style
+  you did not think of (double-quoted as well as single-quoted, a multi-line form,
+  a generated file). Also assert the rule's *inputs exist*: a check that reads a
+  path which was never created passes vacuously.
+- **Let matrices assert their own completeness.** Where a rule must hold for every
+  member of a set the program can enumerate (every route, every event, every role),
+  have the test enumerate the real set (walk the router, iterate the enum) and fail
+  when a member has no row. Adding a route without its negative test then breaks
+  the build by construction.
+- **Coverage is a ratchet.** Set thresholds to today's *measured* numbers; they may
+  rise only in the change that earns the rise; lowering one needs a written
+  decision. An aspirational 100 means either nothing runs it or the build is red
+  over a gap nobody in the room created. Where a run-to-run difference is real
+  noise, pin the threshold to the lowest repeatable value and say so beside it.
+  A ratchet polices structure, never the quality of an assertion — that is §2.6.
+
+### 2.8 Stubs and flakes
+
+- **A stand-in that always answers proves nothing.** Every stub is a claim about
+  the world. For any capability the environment may or may not provide (a model, a
+  camera, a push transport), keep a test where it is **absent**, and one flagged
+  run against the genuine dependency whose output a person reads.
+- **When two capabilities are stubbed, every test states both.** A test that means
+  "nothing can find the face" while leaving a second thing unstubbed silently tests
+  something else.
+- **Stubbing the general transport is not stubbing the specific one.** Replacing
+  the HTTP client leaves a streaming transport untouched, so a test believing it
+  exercises the live path exercises the fallback.
+- **A flaky test is an unread defect report.** Do not fix it by retrying. A wait
+  that times out on a *stable wrong value* is a delivery that never happened, not a
+  slow test. Check the enclosing timeout before raising an inner one (a five-second
+  wait inside a five-second test can never be spent). A quiet N-run loop is not
+  proof; reproduce under the real loaded conditions. Reset shared state against a
+  quiet tree. When an assertion can fail for several correct reasons, assert the
+  preconditions too, so a one-in-twenty failure names its cause.
+- **Set timeouts from measurement.** A generous timeout turns a fast failure into a
+  long stall and usually hides a defect (a per-item allowance that was really a
+  model being re-initialised on every item). Measure one iteration, set the limit
+  near it, poll and report *work done*, and kill and fix rather than wait out a
+  known-bad run.
 
 ---
 
@@ -465,7 +682,7 @@ fn formats_bytes(#[case] bytes: u64, #[case] expected: &str) {
   week that a suite was blind on failure is avoidable; the storage cost is
   trivial next to a day of guessing. For a Leptos/HTMX frontend the same
   Playwright suite applies — the driver does not care what compiled the HTML.
-- **Isolate hard.** A separate test database; `#[sqlx::test]` per-test databases;
+- **Isolate hard** (flakes, stubs and timeouts are §2.8). A separate test database; `#[sqlx::test]` per-test databases;
   unique-per-run identifiers (`{label}.{run_id}@example.test`, where `run_id`
   comes from one place); no shared state between suites; suites runnable in
   parallel on one machine.
@@ -486,6 +703,21 @@ fn formats_bytes(#[case] bytes: u64, #[case] expected: &str) {
   `docker compose up -d db`; CI hits a service container. Do not spin a
   testcontainers Postgres per test — it is the slowest possible way to isolate
   what `#[sqlx::test]` already isolates.
+- **Or an embedded server, if "one command, no Docker" matters.** A crate such as
+  `postgresql_embedded` downloads and unpacks a real Postgres binary and starts one
+  instance **per test binary**, with a database per test inside it. It keeps the
+  rule that tests hit real Postgres, and removes Docker as a prerequisite. The
+  costs are real and must be decided, not discovered:
+  - the Postgres archive is a **build input**: pin its major version to the one
+    production runs, and on runners without general internet access pre-fetch it
+    and point the crate at a cached path (set in `.env.test`);
+  - two test binaries must not share a data directory or port;
+  - an in-process or single-writer test database from another ecosystem imposes
+    constraints (serial files, a one-slot upload gate) that a real server does not.
+    When you move to a real server, name each workaround and its reason before
+    deleting it (§20.6);
+  - if the target CI platform cannot cache the archive, fall back to the service
+    container above — record that as a superseding addendum, not a silent change.
 
 ---
 
@@ -655,6 +887,9 @@ CREATE TRIGGER requests_owner_active
 
 ## 5. Schema evolution (migrations and wholesale snapshot, same change)
 
+*Decision: `DR-11`. This section is written for option A (twin files). Option B,
+for a project with nothing deployed yet, is §5.3.*
+
 Two halves, always in sync, landed in the same commit. Skipping either produces
 exactly the drift this section exists to prevent.
 
@@ -705,6 +940,40 @@ add the new column and dual-write in release *n*, backfill in *n+1*, switch read
 in *n+2*, drop the old column in *n+3*. Each step is its own migration and its own
 addendum. A single `ALTER TABLE … RENAME COLUMN` in a monolith deploys fine and
 then paged the team at 02:00 for the previous pod that was still on the old code.
+
+### 5.3 Option B: one snapshot, no migrations (`DR-11 = B`)
+
+Use this while no environment holds data worth keeping. §5.1's migration rules do
+not apply; these replace them.
+
+- **One file is the schema.** `db/schema.sql` lists every current column of every
+  table, applied whole and **idempotent** (`CREATE … IF NOT EXISTS`, guarded
+  `ALTER … ADD COLUMN IF NOT EXISTS`). Embed it with `include_str!` so the binary
+  and the schema cannot be deployed apart.
+- **Stamp a version, and refuse an older one.** The apply step writes
+  `schema_state(version)`. At boot, a database stamped lower than the code's
+  constant makes the process exit non-zero with a message that names the reset
+  command. Do not "try anyway": an old shape plus new queries is a runtime error
+  at the first query that touches the changed column.
+- **Know what whole-file apply cannot do.** `IF NOT EXISTS` skips an existing
+  table, so a changed column type, a tightened `CHECK` or a new `NOT NULL` is *not*
+  applied to a database that already has the table. That is exactly what the
+  version bump and the reset are for — bump the version in the same change as
+  every edit that an existing database would miss.
+- **The role that applies is not always the role that runs.** If the runtime role
+  cannot create objects, the boot step should *verify* the schema (every expected
+  table exists and the stamp matches) instead of applying it, and say so in the
+  log.
+- **Two processes can boot at once.** Take an advisory lock around apply (as in
+  §5.1) so concurrent boots serialise instead of racing; heartbeat it, and give
+  it a bounded wait.
+- **Make the choice un-erodable.** A standards check fails if a `migrations/`
+  directory exists, and another fails if the data layer maps a table or column the
+  snapshot never creates (or the reverse). Without these two, B drifts into a
+  half-migrated hybrid that has neither option's guarantees.
+- **Write down when B ends.** The addendum states the trigger (for example "the
+  first environment whose data we would not recreate"), and the day it fires the
+  snapshot becomes migration `0001` under option A.
 
 ---
 
@@ -778,6 +1047,14 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 - **Idempotency for unsafe retries.** Any `POST` a client may retry takes an
   `Idempotency-Key` header stored with the response, so a double-submit cannot
   create two rows. This is a wire-contract decision, not a later feature.
+- **One definition of any rule that a server and a browser worker both apply.** If
+  the server decides "this path is an immutable asset" and a service worker decides
+  the same thing for its cache, a hand-kept copy on each side will drift, and the
+  drift is silent (a stale file served for a day). Define the rule once in Rust,
+  have `xtask` generate the worker's copy, import the generated file, and add a
+  parity test that runs the server's function and the generated one over the same
+  sampled paths. The same applies to copy, bounds and format lists the client
+  restates: generate them as data from the Rust definition (§20.5).
 
 ### 6.2 `data-testid` at authoring time
 
@@ -1019,7 +1296,7 @@ message.
 | 3. Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Size/panic/lint rules hold |
 | 4. Unit | `cargo nextest run --workspace --lib` | Pure logic, no database |
 | 5. Doc | `cargo test --workspace --doc` | Examples in doc comments compile and pass |
-| 6. Integration | `cargo nextest run --workspace` with `DATABASE_URL` set | Real SQL, real migrations, real authorization |
+| 6. Integration | `cargo nextest run --workspace` with `DATABASE_URL` set | Real SQL, the real schema path (migrations or snapshot), real authorization |
 | 7. E2E | `playwright test` against the built app | Real browser, real backend |
 | 8. Supply chain | `cargo deny check` + `cargo audit` | Advisories, licences, bans, sources |
 | 9. Container | build, run, `curl :3000/healthz` | The contract in §10.1 |
@@ -1070,6 +1347,32 @@ no DATABASE_URL in this environment. Run `just verify` before merge.
   `unsafe`, that is the dependency's business; our code does not get an
   exception without an addendum.
 
+### 8.3 Measure the claim; do not assert it
+
+Any statement of the form "this will scale", "this is fast enough" or "that
+feature does not starve the rest" is a measurement waiting to be taken.
+
+- Write the load simulation or micro-benchmark as a **committed script**, so the
+  claim can be re-run when the cost model changes. Weight new work *into* the
+  existing traffic mix rather than on top of it.
+- **Report the tail, not only the median.** Head-of-line blocking leaves a median
+  alone and puts one unlucky request behind a long queue. Record p50, p95, p99 and
+  the maximum.
+- **Measure cold** when the thing measured has a cache, and say in the script what
+  invalidates the result.
+- A speed claim for a rewrite is a **comparison taken in the same session on the
+  same machine** against the old implementation, not an absolute number from
+  somewhere else.
+
+### 8.4 Close the class, not the instance
+
+When a defect is found, the fix is not done when that call site is correct.
+Search for the same shape everywhere else, in the same change, and record in the
+addendum *which* sites you checked so the next person knows whether the class was
+closed or only the instance. Before deleting anything an inventory calls dead,
+search the decision register for a standing ruling that it stays: "mechanically
+unreferenced" and "not wanted" are different findings.
+
 ---
 
 ## 9. Reproducible local dev and the environment story
@@ -1077,8 +1380,9 @@ no DATABASE_URL in this environment. Run `just verify` before merge.
 *Decision: `DR-10` (dev orchestration).*
 
 - **One command from clone to green.** `just bootstrap` installs the toolchain,
-  copies `.env.example` to `.env` when absent, starts Postgres, runs migrations,
-  and prints the next three commands. `just verify` runs the whole ladder of
+  copies `.env.example` to `.env` when absent, starts Postgres, applies the schema
+  (migrations, or the snapshot under `DR-11 = B`), and prints the next three
+  commands. `just verify` runs the whole ladder of
   §8.1. `just up` runs the app; `just e2e` runs the browser suite with video on.
 - **`just` is a task list, not a build system.** A `justfile` with ~10 recipes is
   discoverable and typed by autocomplete. `cargo xtask` is the alternative when
@@ -1386,7 +1690,8 @@ machine except the one the new joiner has.
 ## 11. What to decide before writing the first feature (checklist)
 
 1. **Run the decision interview** (`DR-01`…`DR-03` before `src/`; the rest before
-   the area they govern), and record each answer as a numbered addendum.
+   the area they govern, with `DR-11` before the first table), and record each
+   answer as a numbered addendum.
 2. Source-of-truth spec location, addenda numbering, and
    `scripts/check-decisions.sh` wired into CI.
 3. Toolchain pinned (`rust-toolchain.toml`, `rust-version`), workspace lints,
@@ -1399,8 +1704,11 @@ machine except the one the new joiner has.
    read and every authorization check.
 7. Soft delete + partial unique indexes + trigger-enforced FK liveness + UUIDv7
    newtypes minted in one place + real actor rows.
-8. Snapshot + migration twin per change, parity script in CI, migrations on boot
-   behind an advisory lock, standalone `migrate` command.
+8. Schema (`DR-11`): either snapshot + migration twin per change, parity script in
+   CI, migrations on boot behind an advisory lock, standalone `migrate` command; or
+   a single idempotent snapshot with a version stamp, a refuse-older gate, an
+   apply-twice test, and a standards check against a stray `migrations/` directory,
+   with the trigger that ends it written down.
 9. Generated wire contract committed and diffed, route-registration test, one
    error shape, idempotency keys on retryable `POST`s.
 10. `data-testid` convention, hook/component split, presentation-only JSX.
@@ -1427,10 +1735,24 @@ machine except the one the new joiner has.
 21. §17 baselines: release profile chosen (including the `panic` strategy), one
     benchmark with a noise budget, and the adversarial tools scheduled into
     nightly rather than wished for.
+22. §2.5-§2.8 test discipline: the assertion reads persisted state, a bite check
+    is recorded per consequential change, the standards checker is proven to fail
+    on a fixture, and coverage thresholds are a ratchet someone actually runs.
+23. §18 crate graph checked by script before any module design, with the shared
+    vocabulary in a dependency-free leaf crate and a graph check in the verify
+    script.
+24. Porting an existing system only: §20 — scope and oracle, mechanical test
+    classification, golden fixtures, the determinism-hazard table, a divergence
+    log, and a shadow harness that has been shown to fail.
+25. §1.1 plans and designs in two cuts: every prose section ends with a `Verify /
+    do` list of boxes (id, one action, an exact path or command, a done-when),
+    every figure copied from a survey is re-counted, and a small gate over the
+    documents has been shown to fail on a fixture.
 
-Answer these twenty-one up front and a greenfield Rust project avoids most of
+Answer these twenty-five up front and a greenfield Rust project avoids most of
 the rework, silent drift, and "we should have written that down" moments this
-template exists to prevent.
+template exists to prevent. (Items 1-21 are the original list and keep their
+numbers; 22-25 were appended.)
 
 ---
 
@@ -1504,11 +1826,11 @@ project's context:
 | Option | Wins when | Loses when |
 | --- | --- | --- |
 | `sqlx` 0.9 | The team writes SQL; you want compile-checked queries without a DSL | Reviewers cannot read SQL fluently; `.sqlx/` discipline slips |
-| `diesel` 2.3 + `diesel-async` 0.9 | You want illegal queries to fail with no database; Drizzle-like schema-as-source | Wide schemas make `schema.rs` regeneration and compile time painful |
+| `diesel` 2.3 + `diesel-async` 0.9 | You want illegal queries to fail with no database; the schema is the source of the types | Wide schemas make `schema.rs` regeneration and compile time painful |
 | `sea-orm` 2.0 | Reads are object graphs (`EntityLoader` kills N+1 by construction) | You need compile-time schema checking; the dependency tree is largest |
 
-**Recommendation:** `sqlx`, unless the team is TypeScript-native and wants the
-literal Drizzle analogue (then diesel). Do not mix two of them.
+**Recommendation:** `sqlx`, unless the team comes from a schema-first ORM and wants
+the schema to generate the types (then diesel). Do not mix two of them.
 
 ### DR-03 · Crate layout
 
@@ -1926,6 +2248,53 @@ fn main() -> anyhow::Result<()> {
 
 **Recommendation:** A, with a thin `cargo xtask` only for the schema-parity and
 release logic that genuinely benefits from being Rust.
+
+### DR-11 · Schema evolution
+
+**Question.** Is there a live database that must be migrated in place, or is the
+schema still free to be rebuilt?
+
+**A. Twin files: snapshot plus numbered migrations** (the workflow in §5.1-5.2)
+
+```text
+db/schema.sql                      # applied whole to a brand-new database
+migrations/0007_add_priority.sql   # catches an existing database up
+scripts/check-schema-parity.sh     # CI proves the two agree
+```
+
+- **Pros:** an already-provisioned database upgrades in place; history is
+  replayable; expand/contract changes (§5.2) are possible.
+- **Costs:** every change is two edits plus a parity job; a migrator to embed,
+  lock and test; more to review per change.
+- **Choose if** any database holds data you cannot recreate — a deployed
+  environment, a demo that people have signed up to, a staging copy you keep.
+
+**B. One snapshot with a version gate** (no migrations)
+
+```text
+db/schema.sql                      # the only definition; applied whole, idempotent
+schema_state(version int)          # stamped on apply
+```
+
+- **Pros:** one definition, one place to review; no history to keep consistent;
+  the fastest way to change a schema that has no data to protect.
+- **Costs:** a database built by an older snapshot cannot be upgraded — the
+  only remedy is a reset, so the gate must **refuse to start** against an older
+  stamp with a message naming the reset command, rather than silently run
+  against the wrong shape. Applying the whole file on every boot must be
+  idempotent, and a column *type* change is not re-applied to an existing table.
+- **Required with B:** the version constant bumps in the same change as every
+  snapshot edit; a test applies the file twice and asserts no change; a test
+  refuses an older stamp; a standards check fails if a `migrations/` directory
+  appears (so the choice cannot erode into a half-migration setup); and the
+  decision is recorded with the trigger that ends it ("the first environment
+  that holds data worth keeping").
+- **Choose if** nothing is deployed and every database can be thrown away.
+
+**Recommendation:** B until the first environment holds data worth keeping, then
+supersede with an addendum adopting A. Moving B → A is cheap (the snapshot becomes
+migration `0001`); moving A → B throws history away, so do not start at A for
+the look of it.
 
 ---
 
@@ -2450,6 +2819,41 @@ and no benefit.
 | `Deref`-based "inheritance" | Re-exposes the inner API and breaks the invariant (§14.3) |
 | Actor for every component | Supervision and message ordering you now own; use it for I/O ownership only (§16) |
 
+### 15.11 Effects as a returned value (write-then-publish)
+
+When correctness depends on every write also notifying someone (pushing an event
+to connected clients, invalidating a cache, scheduling a re-plan), the usual
+guard is a convention, then a regex rule that pairs "writer" calls with "publisher"
+calls. Both fail quietly: the pair is checked by spelling, and a new write path is
+reviewed by eye.
+
+Make the obligation a type instead:
+
+```rust
+/// What a write caused that other parts of the system must hear about.
+#[must_use = "publish these effects, or discard them with a stated reason"]
+pub struct Effects(Vec<Event>);
+
+impl Effects {
+    pub fn discard(self, _reason: &'static str) {}   // the only way to drop one
+}
+
+pub async fn record_scan(/* … */) -> Result<(Scan, Effects), StoreError> { /* … */ }
+```
+
+- Every write operation returns `(Output, Effects)`; the composition layer hands the
+  effects to the publisher. Neither the data layer nor the domain adapters name the
+  publisher, which keeps the dependency graph acyclic (§18, §20.7).
+- `Event` and the cache-tag type are **closed enums** in the dependency-free leaf
+  crate, so adding a variant is a compile error at every exhaustive `match` — the
+  cheapest possible checklist for "who needs to learn about this?".
+- Test the obligation with a compile-fail test (`trybuild`): dropping an `Effects`
+  without `discard` must fail to compile with a message that names the type.
+- **Wrong when** the notification is genuinely optional best-effort (a metric, a
+  debug event) — those are plain calls, and wrapping them trains people to write
+  `discard("n/a")` reflexively, which destroys the signal. If `discard` calls
+  outnumber real publishes in review, the type is covering the wrong operations.
+
 ---
 
 ## 16. Async correctness and observability
@@ -2817,8 +3221,9 @@ Rules that keep these honest:
   wrong assertion is an incident.
 - **`cargo-semver-checks` matters only if you publish a crate.** For a binary,
   the wire contract (§6.1) is the API that needs protecting, not the Rust surface.
-- **Coverage stays a diagnostic** (§2.4). A line executed by a test that asserts
-  nothing is worse than an uncovered line, because it looks covered.
+- **Coverage is a ratchet, not a target** (§2.7). A line executed by a test that
+  asserts nothing is worse than an uncovered line, because it looks covered; the
+  bite check (§2.6), not the percentage, says whether the assertion bites.
 
 ### 17.6 What goes in CI, and when
 
@@ -2840,10 +3245,32 @@ and fail only on a regression that exceeds it twice in a row.
 
 ## 18. Architecture in Rust
 
-The router's §5 fixes the cross-language decisions: boundary before
-distribution, executable dependency rules, one owner per table, pattern per
-module, abstraction needs a second implementation. This section is the Rust
-mechanism for each — and Rust gets one of them for free that Node does not.
+Five architecture rules hold in any language:
+
+1. **Boundary before distribution** — draw the module line first; a network hop
+   is a later, optional consequence of it.
+2. **Executable dependency rules** — a direction that only a diagram states is
+   not a rule.
+3. **One owner per table** — one module writes it; others read through that
+   module.
+4. **A pattern per module, not per codebase** — a module earns a pattern by the
+   bug it removes.
+5. **An abstraction needs a second implementation** — a trait with one
+   implementation is a prediction.
+
+This section is the Rust mechanism for each, and Rust gets one of them for free:
+the compiler refuses a dependency cycle between crates (rule 2), which most
+languages leave to a linter.
+
+**Check the graph by script, not by reading.** A crate graph that looks acyclic
+in prose can still contain a cycle, and the usual way to miss it is to describe
+a dependency by its runtime mechanism ("only a function pointer", "just a
+callback") when Cargo cares only about the manifest. Before a layout is
+committed, write the intended edges into a small script (or `cargo metadata`
+plus a cycle check) and run it. Also list the shared vocabulary — ids, the
+clock, the event and cache-tag enums, anything two sibling crates both need to
+*name* — and put it in a dependency-free leaf crate on day one. The cheapest fix
+for a cycle is almost always that leaf, not a new abstraction.
 
 ### 18.1 The compiler is the boundary
 
@@ -2935,7 +3362,7 @@ pub struct RequestService { db: PgPool, clock: Clock }
 Two rules that keep this honest:
 
 - **A trait with one implementation and no second adapter is a prediction, not a
-  port** (router §5.5). In Rust it is also a bill: `async fn` in a trait is not
+  port** (rule 5, above). In Rust it is also a bill: `async fn` in a trait is not
   dyn-compatible, so the moment you want `Box<dyn Port>` you need `#[async_trait]`
   or a hand-rolled boxed future, and the `Send + Sync` bounds become viral
   through every impl and every struct that holds it.
@@ -2995,7 +3422,7 @@ crates/
 
 Migration is mechanical when the time comes: because `domain` and `application`
 already have no infrastructure dependencies, promoting a crate to a service is a
-deployment change, not a rewrite (router §5.1).
+deployment change, not a rewrite (rule 1, above).
 
 ### 18.6 Rust-specific anti-patterns
 
@@ -3067,12 +3494,181 @@ ways. Maintain it the way it asks you to maintain a project:
 - **Re-verify the β labels in §16.8.** OpenTelemetry's Rust traces were still
   beta in October 2026 while metrics and logs were stable; a status change
   should update that sentence, not be discovered by a compile error.
+- **State what a revision actually checked.** The October 2026 revision that added
+  §2.5-§2.8, §5.3, DR-11, §8.3-§8.4, §15.11 and §20 was made without a Rust
+  toolchain on the machine. It was verified by reading and by script only: every
+  internal `§` reference resolves, the eleven `DR-` ids are present and the first
+  ten unchanged, and the added text was searched for project-specific names. The
+  new Rust snippets (`Effects`, `discard`) were **not compiled**, and the
+  tool and flag names introduced (`trybuild`, `cargo modules`, `postgresql_embedded`,
+  `cargo mutants` scoping) were not checked against current releases. Re-verify
+  them with the quarterly pass above before relying on them.
 - **Do not let §15 grow into a catalogue.** A pattern earns its place only by
   naming a bug class it removes and the condition under which it is wrong. A
   pattern with no deny-condition is a preference, and preferences belong in the
   team's style review, not in a standing instruction that an agent must obey.
 
 If a rule here conflicts with the language you actually chose, you are in the
-wrong variant: `GREENFIELD-NODE.md` is the Node.js/TypeScript sibling, and
-[`GREENFIELD.md`](GREENFIELD.md) is the router that asks the language question
-and explains how to write a new variant.
+wrong variant. [`GREENFIELD.md`](GREENFIELD.md) is the language-neutral template;
+to write a variant for another language, keep its section order, replace each
+mechanism with the language's own, and keep every invariant that is not
+language-specific (real-database tests, soft deletion, bite checks, honest
+validation, single-source decisions).
+
+---
+
+## 20. Porting an existing system to Rust
+
+Everything above assumes a blank repository. A port is different: the old
+implementation is both the specification and the thing being replaced, and the
+dangerous failures are silent ones — a response that is almost the same, a sort
+that is stable in one language and not another, a rounding rule nobody wrote
+down. This section is the extra discipline for that case. It applies on top of
+§0-§19, not instead of them.
+
+### 20.1 Scope, then the oracle
+
+- **Decide the surface before the first line.** Say which layers move (server,
+  domain engine, shared types) and which stay (usually the browser client). The
+  boundary that stays is a contract you must keep byte-compatible, so it should be
+  generated from the new code (§6.1), not re-typed.
+- **The old system is the oracle; keep it running.** Every behavioural question
+  ("what does it return when…") is answered by running the old implementation,
+  not by reading its source and guessing. Keep it buildable until the cutover
+  window closes.
+- **Classify the existing tests mechanically before porting any.** A script that
+  counts, per test file, the HTTP calls, the imports of internals and the direct
+  database access sorts them into: *pure black-box* (port directly), *black-box
+  plus internals* (keep the HTTP half, rewrite the rest), and *white-box* (re-derive
+  from the specification). Without the count, "port the tests" hides the fact that
+  a majority import internals that no longer exist. Track every file in a ledger.
+- **The black-box end-to-end suites are the strongest asset.** They survive the
+  rewrite unchanged if the only coupling is *how the stack is started*. Make that
+  one switch (a backend selector in the shared harness), and audit the specs for
+  any that import the old implementation's internals.
+
+### 20.2 Golden fixtures from the old implementation
+
+- **Export, do not retype.** For every pure function and every parser, run the old
+  implementation over a broad input set and commit `{input, output}` pairs (with a
+  manifest holding the count, checked against the old test runner's own count).
+  The new code is tested against the behaviour that *ships*.
+- **Fixtures for validators carry the accepted value and the message key**, so a
+  difference in wording or normalisation order fails, not just accept/reject.
+- **Generate them with a command, review the diff, and never hand-edit.** A golden
+  file edited to make a test pass certifies nothing.
+
+### 20.3 Determinism hazards between languages
+
+List these before porting any numeric or ordering code; each has bitten a port.
+
+| Hazard | In the old language | Rust rule |
+| --- | --- | --- |
+| Sort stability and comparator totality | Often stable; comparators may be partial | `sort_by` is stable; write a total comparator with an explicit last tie-break |
+| Map iteration order | Insertion order is observable | `IndexMap`, never `HashMap`, wherever order is visible |
+| Numbers | All doubles | Choose `f64`, integer, or decimal per value; one `round` helper that matches the database's rounding |
+| Integer width and overflow | Silent double precision | Explicit width, checked arithmetic, a bounded input |
+| String comparison and length | UTF-16 code units | Bytes vs scalar values vs graphemes: pick per rule and test with non-ASCII |
+| Hash arithmetic | 32-bit multiply helper | `wrapping_mul` on the exact width |
+| Sentinels | Infinity / NaN / `undefined` | `Option` or a typed variant |
+| Search budgets | Counters with a fallback | Keep the constant and the fallback; test both sides of the budget |
+| Ambient time and randomness | Called anywhere | Inject `Clock` and an id supply (§2.4); count the old system's ambient reads first, because that number tells you how much of the comparison needs normalising |
+
+### 20.4 The shadow run: compare two live implementations
+
+When confidence has to come from behaviour, run both and diff.
+
+- **Twin databases built from the same schema**, one per implementation; compare
+  responses *and* persisted rows, table by table, read-only.
+- **A normaliser is the heart of it.** Byte equality is impossible when the old
+  side uses ambient time, ids, tokens and ordering. Write the rules as an explicit,
+  unit-tested list: timestamps within a window of request time become a
+  placeholder (far outside is *flagged*, not hidden), ids become stable aliases in
+  first-seen order, tokens and generated codes become typed placeholders **with a
+  format check** (length and alphabet), order-insensitive collections are sorted
+  only where the contract says order is not significant, numbers compare exactly.
+- **Compare "did it succeed" before comparing bodies.** One side returning 500
+  where the other returns 200 must be reported first.
+- **Streams are compared frame by frame**: event name, payload, id, and timing
+  fields by *range* (a random reconnect delay is never equal).
+- **An allow-list of accepted divergences**, each entry with a reason and a
+  decision id. A divergence with no id is a bug.
+- **Prove the harness can fail.** Run it old-against-old (zero divergences; this
+  measures its false-positive rate) and old-against-a-deliberately-mutated-copy
+  (one changed field, one dropped frame, two reordered messages, one changed
+  status — each must be reported). A comparison tool that cannot fail is the same
+  defect as a standards rule that cannot fail (§2.7).
+- **Give the new side a deterministic mode** (fixed clock, seeded id source),
+  compiled in only for the test profile and verified absent from the release
+  binary, so its own output can be checked byte-for-byte across two runs.
+
+### 20.5 A domain engine shared with the browser
+
+If a pure engine also runs in the client, the port decision is really two:
+
+- **Expose it through a JSON-in, JSON-out facade**, not by sharing types. The
+  client then depends on a generated, versioned schema (with a `schemaVersion`
+  that the loader checks and refuses on mismatch, visibly) rather than on the
+  engine's internal types — contract coupling instead of model coupling across a
+  runtime boundary.
+- **Move every rule the client re-states into the engine's own catalogue.** If the
+  client hard-codes a list, a bound or a pattern that the engine also knows, expose
+  it as data and delete the client's copy; the port is the cheapest time to remove
+  that duplication.
+- **Compile the engine for `wasm32` from day one** (no async runtime, no ambient
+  time, no threads in its dependency graph), and gate on it in CI. Lazy-load the
+  module only on the screens that need it, serve it as an immutable hashed asset,
+  budget its size as a ratchet, and contain panics at the facade so one bad call
+  cannot poison the module for the next.
+- **Share one definition of any path or cache rule that both a server and a
+  browser worker apply** (an "immutable asset" rule, say). Generate the worker's
+  copy from the server's, so the two cannot drift.
+
+### 20.6 What the old system quietly assumed
+
+Read these off the old code before designing; each becomes a decision (§0.5).
+
+- **Single process.** In-memory event buses, caches, throttles, one-shot
+  challenge maps and periodic tick loops all assume exactly one instance. List
+  them, decide whether the port stays single-instance (usually yes, first), and
+  add a **startup guard** (a session-level advisory lock) so a second instance
+  fails loudly instead of silently splitting live state.
+- **A write that must be followed by a publish.** If correctness depends on every
+  write path calling a matching publish, a regex rule is a weak guard. Return the
+  publishable effects from the write as a `#[must_use]` value that can only be
+  dropped through a call that takes a reason (§15.11), and let the caller hand
+  them on.
+- **Quirks you will be tempted to fix.** Plain-text credentials, several token
+  carriers, missing CSRF or CORS, a comment claiming a transaction the code does
+  not use. Keep a **divergence log**: every item is *kept*, *changed by decision*,
+  or *to decide*, and the shadow allow-list may contain only logged items. A port
+  that fixes things as it goes cannot be compared.
+- **Test infrastructure that hid constraints.** An embedded single-writer database
+  forces serial test files and a one-slot upload gate; moving to a real server
+  database removes the constraint *and* the reason for the workaround. Name each
+  workaround and its reason before deleting it.
+- **Boot-time scripts in another language.** Provisioning that shells out to the
+  old runtime must become a subcommand of the new binary, or the image keeps a
+  runtime it no longer needs.
+
+### 20.7 The crate graph is the first deliverable
+
+Draw the intended dependency edges and run them through a cycle check
+(§18) before writing any module design. Put the shared vocabulary (clock, ids, the
+closed event and cache-tag enums, shutdown token) in a dependency-free leaf on day
+one, and keep health endpoints and anything else that must see *both* the database
+and the shell in the composition crate. Add the graph check to the verify script
+with the original cycle as its failing fixture.
+
+### 20.8 Cutover and retirement
+
+- **Per-domain gates, not a date.** A domain is ported when its characterisation
+  tests pass, the shadow report for its routes shows zero unexplained divergences
+  over several consecutive runs of the full scripted day, and the load comparison
+  matches the old baseline.
+- **A rollback you have exercised.** Start the old image against the same
+  database once before cutover. The schema must be frozen for the whole shadow
+  period for this to be possible.
+- **Retire deliberately.** Delete the harness, the cross-implementation parity
+  checks and the old code in the cutover change, after the rollback window closes
+  — not before, not never.

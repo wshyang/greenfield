@@ -9,9 +9,11 @@ does.
 ```text
 GREENFIELD.md            ← you are here: the language question and the shared contract
 ├── GREENFIELD-NODE.md   ← Node.js + TypeScript variant (standalone)
+├── GREENFIELD-GO.md     ← Go 1.27 variant (standalone)
 ├── GREENFIELD-RUST.md   ← Rust variant (standalone)
 ├── FDS_BUILDER.md       ← companion: builds the functional/design spec (any language)
-└── initial-templates/   ← container starters to contextualise, not to copy blind
+├── initial-templates/   ← container starters to contextualise, not to copy blind
+└── .claude/             ← progressive-disclosure skills, path-scoped rules & hooks
 ```
 
 **The router's only job is to stop the agent from picking a language for you.**
@@ -116,15 +118,35 @@ B. Rust 1.99 (2024 edition) — the type system as the design tool
           long-lived and ops cost dominates, the domain is correctness-critical,
           or the team already writes and reviews Rust.
 
-C. A language with no variant yet (Python, Go, Java/Kotlin, C#…)
-   Real answer: there is no template, so the honest options are (1) choose A or B
-   for now, or (2) write the variant first (§8) and accept that it is a
+C. Go 1.27 — fast compilation, single static binary, native concurrency
+   Real example (chi/huma + sqlc + pgx/v5, the variant's default shape):
+       func (h *Handler) GetRequest(ctx context.Context, in *GetRequestInput) (*RequestOutput, error) {
+           row, err := h.queries.GetActiveRequest(ctx, in.ID)
+           if errors.Is(err, pgx.ErrNoRows) {
+               return nil, huma.Error404NotFound("request not found")
+           }
+           return &RequestOutput{Body: toSummary(row)}, err
+       }
+   Pros:  <2 s incremental builds; ~15–40 MB RSS in distroless/static with no
+          runtime to patch; compiler-enforced package privacy (`internal/`) and
+          compile-checked SQL (`sqlc`); native goroutines + Go 1.27 stdlib
+          (`uuid` v7, `encoding/json/v2`, `testing/synctest`).
+   Costs: explicit error and validation ceremony; `nil`-slice and zero-value wire
+          subtleties; browser rule sharing uses generated rule catalogues rather
+          than shared TypeScript packages or tiny WASM modules.
+   Choose if: you want a small static binary, predictable tail latency, high I/O
+          fan-out, and fast onboarding without Rust's borrow-checker ramp-up.
+
+D. A language with no variant yet (Python, Java/Kotlin, C#…)
+   Real answer: there is no template, so the honest options are (1) choose A, B,
+   or C for now, or (2) write the variant first (§8) and accept that it is a
    half-day of work with no code output.
 
-Recommendation: A, unless §2's answers point at Rust. Node gets a service to
-first-endpoint fastest, and a hot path can be carved out into Rust later; the
-reverse migration is a rewrite.
-Reply A/B/C, or "you choose" (which means A, recorded as decided_by: agent).
+Recommendation: A for rapid full-stack CRUD; C when static-binary ops or Go team
+familiarity apply; B when §2's answers point at Rust. Node gets a service to
+first-endpoint fastest, and a hot path can be carved out later; the reverse
+migration is a rewrite.
+Reply A/B/C/D, or "you choose" (which means A, recorded as decided_by: agent).
 ```
 
 ### 1.1 Recording the answer
@@ -468,10 +490,16 @@ the unchosen variant(s), this router, and any copied-but-unused scaffold.
    product's language, not the implementation's.
 6. **Bootstrap:** one command to a running stack, a real test DB, and the
    container contract green before the first feature.
-7. **Splitting the file into `CLAUDE-<lang>-<area>.md` parts is optional.** Do
-   it when one file stops being readable in a single pass, not as a bootstrap
-   ritual; if you do, keep the decision/addenda and test sections in the first
-   file an agent reads.
+7. **Splitting the file into `CLAUDE-<lang>-<area>.md` parts — or unpacking into
+   `.claude/` skills, path-scoped rules, and hooks — keeps context lean.** When
+   unpacking via `.claude/` (`/greenfield-bootstrap`), render a `<= 130`-line
+   `CLAUDE.md` from `.claude/skills/greenfield-bootstrap/assets/CLAUDE.lean-template.md`
+   including its two-column skill/fallback dispatch table (so Claude Code uses
+   skills/hooks while `AGENTS.md` harnesses without Skill/Hook loaders read exact
+   `.claude/skills/*/SKILL.md`, `.claude/rules/*.md`, and verification script
+   paths directly), keep **one** canonical root file (`AGENTS.md` + `@AGENTS.md`
+   in `CLAUDE.md`, never two copies), and prune unused `<other-lang>-*.md`
+   references, `greenfield-bootstrap/`, and `greenfield-port/` (if not porting).
 
 Nothing in this router needs to be copied forward. If a project's `CLAUDE.md`
 still contains a link back here, the variant was not standalone enough — fix the
@@ -502,9 +530,9 @@ which is exactly the friction the single-language templates exist to remove.
 Only do this if someone will maintain it. A variant that rots is worse than a
 variant that does not exist, because it carries the authority of the set.
 
-1. **Copy the nearest skeleton.** `GREENFIELD-RUST.md` is the fuller shape
-   (§0–§19, with the decision cards and the code-level sections); the Node
-   variant is the leaner one (§0–§12).
+1. **Copy the nearest skeleton.** `GREENFIELD-RUST.md` and `GREENFIELD-GO.md`
+   are the fuller shape (§0–§20, with the decision cards and the code-level
+   sections); the Node variant is the leaner one (§0–§14).
 2. **Keep the two load-bearing sections intact in intent**: the decision
    interview and the addendum discipline. They are the reason the set exists.
 3. **Translate the invariant core of §3**, one row at a time, into the language's
@@ -514,14 +542,14 @@ variant that does not exist, because it carries the authority of the set.
    in the project's vocabulary, its costs, and a "choose this if". A menu of
    adjectives is not a decision aid.
 5. **Date it and record versions** at the top ("verified October 2026"), the way
-   both existing variants do. An undated template is a rumour.
+   existing variants do. An undated template is a rumour.
 6. **Name it `GREENFIELD-<LANG>.md`**, add it to the register in §9, and add the
    pointer in the same commit.
 7. **Prove standalone-ness**: hand the file alone to someone who has never seen
    this repo and check they can bootstrap a project. If they need the router or
    the other variant, the file is not done.
-8. **Do not invent a third language choice in the card** until its variant
-   exists. §1-C exists precisely so the router never pretends.
+8. **Do not invent a new language choice in the card** until its variant
+   exists. §1-D exists precisely so the router never pretends.
 
 ---
 
@@ -530,8 +558,9 @@ variant that does not exist, because it carries the authority of the set.
 | Variant | Status | Verified | Maintainer |
 | --- | --- | --- | --- |
 | `GREENFIELD-NODE.md` | active | October 2026 | <team> |
+| `GREENFIELD-GO.md` | active | October 2026 | <team> |
 | `GREENFIELD-RUST.md` | active | October 2026 | <team> |
-| Python, Go, Java/Kotlin, C# | not written | — | — |
+| Python, Java/Kotlin, C# | not written | — | — |
 
 A row is only "active" if the version facts at its top are within a quarter and
 its CI claims still run. Demote before you let it mislead.
